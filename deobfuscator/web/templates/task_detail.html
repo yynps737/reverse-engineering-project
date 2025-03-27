@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>任务详情</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .task-info { margin-bottom: 20px; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
+        .actions { margin-top: 20px; }
+        button { padding: 10px; margin-right: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>任务详情</h1>
+        
+        <div class="task-info">
+            <h2>{{ task.filename }}</h2>
+            <p><strong>状态:</strong> <span id="status">{{ task.status }}</span></p>
+        </div>
+        
+        <div class="actions">
+            <<<<<<<<<</h2>
+            <button id="btn-static" onclick="startAnalysis('static')">静态分析</button>
+            <button id="btn-dynamic" onclick="startAnalysis('dynamic')">动态分析</button>
+        </div>
+        
+        <a href="/">返回首页</a>
+    </div>
+    
+    <script>
+        function startAnalysis(type) {
+            fetch('/api/analyze', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    task_id: '{{ task.id }}',
+                    type: type
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert(data.message);
+                    document.getElementById('status').textContent = 'analyzing_' + type;
+                } else {
+                    alert('错误: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('请求失败');
+            });
+        }
+        
+        // 定期更新状态
+        setInterval(() => {
+            fetch('/api/status/{{ task.id }}')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status !== 'error') {
+                        document.getElementById('status').textContent = data.status;
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        }, 5000);
+    </script>
+</body>
+</html>

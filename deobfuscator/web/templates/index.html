@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>终极逆向工程平台</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .form-container { margin-bottom: 20px; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
+        .task-list { margin-top: 20px; }
+        .task-item { padding: 10px; border: 1px solid #eee; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>终极逆向工程平台</h1>
+        
+        <div class="form-container">
+            <h2>上传文件进行分析</h2>
+            <form action="/upload" method="post" enctype="multipart/form-data">
+                <div>
+                    <label for="file">选择可执行文件:</label>
+                    <input type="file" id="file" name="file" required>
+                </div>
+                <br>
+                <button type="submit">上传</button>
+            </form>
+        </div>
+        
+        <div class="task-list">
+            <h2>分析任务列表</h2>
+            {% if active_tasks %}
+                {% for task_id, task in active_tasks.items() %}
+                    <div class="task-item">
+                        <h3>{{ task.filename }}</h3>
+                        <p>状态: {{ task.status }}</p>
+                        <a href="/task/{{ task_id }}">查看详情</a>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <p>暂无任务</p>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
