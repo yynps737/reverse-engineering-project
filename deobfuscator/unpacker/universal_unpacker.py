@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-通用可执行文件脱壳工具
+增强型通用可执行文件脱壳工具
 支持多种保护技术和静态/动态脱壳方法
+集成反汇编功能
 """
 import os
 import sys
@@ -31,9 +32,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class UniversalUnpacker:
-    """通用可执行文件脱壳器，支持多种保护技术和静态/动态脱壳方法"""
+    """通用可执行文件脱壳器，支持多种保护技术和静态/动态脱壳方法，集成反汇编功能"""
     
-    def __init__(self, input_file: str, output_dir: Optional[str] = None, strategies: Optional[List[str]] = None):
+    def __init__(self, input_file: str, output_dir: Optional[str] = None, 
+                 strategies: Optional[List[str]] = None, disassemble: bool = True):
         """
         初始化脱壳器
         
@@ -41,6 +43,7 @@ class UniversalUnpacker:
             input_file: 输入可执行文件路径
             output_dir: 输出目录
             strategies: 脱壳策略列表（静态、动态、IAT修复）
+            disassemble: 是否执行反汇编
         """
         self.input_file = os.path.abspath(input_file)
         if not os.path.exists(self.input_file):
@@ -59,6 +62,7 @@ class UniversalUnpacker:
         
         # 默认策略: 静态脱壳、动态脱壳、通用IAT修复
         self.strategies = strategies or ['static', 'dynamic', 'iat_fix']
+        self.disassemble = disassemble
         
         # 脱壳结果
         self.unpacked_files = []
@@ -77,6 +81,7 @@ class UniversalUnpacker:
             'detected_protections': [],
             'oep_candidates': [],
             'import_table': [],
+            'disassembly': {},
             'timestamp': time.time(),
             'success': False
         }
@@ -92,6 +97,7 @@ class UniversalUnpacker:
             "iat_results",       # IAT修复结果
             "dumps",             # 内存转储
             "imports",           # 导入表信息
+            "disassembly",       # 反汇编结果
             "logs"               # 日志文件
         ]
         
@@ -105,13 +111,15 @@ class UniversalUnpacker:
             "pefile": self._check_python_module,
             "frida": self._check_python_module,
             "upx": self._check_command,
-            "strings": self._check_command
+            "strings": self._check_command,
+            "capstone": self._check_python_module  # 添加反汇编依赖
         }
         
         optional_tools = {
             "de4dot": self._check_command,
             "scylla": self._check_command,
-            "x64dbg": self._check_command
+            "x64dbg": self._check_command,
+            "radare2": self._check_command       # 添加反汇编工具
         }
         
         missing_required = []
@@ -135,6 +143,16 @@ class UniversalUnpacker:
         if missing_optional:
             logger.info(f"缺少可选工具: {', '.join(missing_optional)}")
             logger.info("某些高级脱壳功能可能不可用")
+
+        # 尝试安装缺失的Python模块
+        if "capstone" in missing_required:
+            try:
+                logger.info("正在安装Capstone模块...")
+                subprocess.run([sys.executable, "-m", "pip", "install", "capstone"], check=True)
+                logger.info("Capstone安装成功")
+                missing_required.remove("capstone")
+            except Exception as e:
+                logger.error(f"安装Capstone失败: {str(e)}")
     
     def _check_python_module(self, module_name: str) -> bool:
         """
@@ -180,8 +198,8 @@ class UniversalUnpacker:
             MD5哈希值
         """
         hasher = hashlib.md5()
-        with open(filepath, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
+        with open(filepath, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b''):
                 hasher.update(chunk)
         return hasher.hexdigest()
     
@@ -196,8 +214,8 @@ class UniversalUnpacker:
             SHA256哈希值
         """
         hasher = hashlib.sha256()
-        with open(filepath, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
+        with open(filepath, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b''):
                 hasher.update(chunk)
         return hasher.hexdigest()
     
@@ -442,6 +460,7 @@ class UniversalUnpacker:
         if not data:
             return 0
             
+        import math
         byte_count = {}
         for byte in data:
             byte_count[byte] = byte_count.get(byte, 0) + 1
@@ -593,8 +612,23 @@ class UniversalUnpacker:
                 shutil.copy(best_file, final_output)
                 logger.info(f"最佳脱壳结果: {final_output}")
                 self.analysis_result['best_result'] = final_output
+                
+                # 执行反汇编
+                if self.disassemble:
+                    disassembly_file = self.disassemble_file(final_output)
+                    if disassembly_file:
+                        logger.info(f"反汇编成功: {disassembly_file}")
+                        self.analysis_result['disassembly_file'] = disassembly_file
         else:
             logger.warning("所有脱壳策略均失败")
+            
+            # 尝试直接对原始文件进行反汇编
+            if self.disassemble:
+                logger.info("尝试对原始文件进行反汇编...")
+                disassembly_file = self.disassemble_file(self.input_file)
+                if disassembly_file:
+                    logger.info(f"原始文件反汇编成功: {disassembly_file}")
+                    self.analysis_result['disassembly_file'] = disassembly_file
         
         # 更新结果状态
         self.analysis_result['success'] = self.dump_success
@@ -604,6 +638,261 @@ class UniversalUnpacker:
         self.generate_report()
         
         return self.dump_success
+    
+    def disassemble_file(self, file_path: str) -> Optional[str]:
+        """
+        反汇编PE文件
+        
+        Args:
+            file_path: 要反汇编的PE文件路径
+            
+        Returns:
+            反汇编文件路径或None
+        """
+        logger.info(f"对文件进行反汇编: {file_path}")
+        disasm_dir = os.path.join(self.output_dir, "disassembly")
+        
+        # 输出文件名
+        base_name = os.path.basename(file_path)
+        disasm_file = os.path.join(disasm_dir, f"{base_name}_disasm.txt")
+        
+        # 尝试使用不同的反汇编工具
+        
+        # 1. 尝试使用内置的Capstone
+        if self._disassemble_with_capstone(file_path, disasm_file):
+            return disasm_file
+        
+        # 2. 尝试使用radare2
+        if self._disassemble_with_radare2(file_path, disasm_file):
+            return disasm_file
+        
+        # 3. 尝试使用objdump (如果在Linux环境)
+        if self._disassemble_with_objdump(file_path, disasm_file):
+            return disasm_file
+        
+        # 所有方法都失败
+        logger.error("所有反汇编方法都失败")
+        return None
+    
+    def _disassemble_with_capstone(self, file_path: str, output_file: str) -> bool:
+        """
+        使用Capstone反汇编PE文件
+        
+        Args:
+            file_path: 要反汇编的PE文件路径
+            output_file: 输出文件路径
+            
+        Returns:
+            是否成功
+        """
+        try:
+            import pefile
+            from capstone import Cs, CS_ARCH_X86, CS_MODE_32, CS_MODE_64
+            
+            # 加载PE文件
+            pe = pefile.PE(file_path)
+            
+            # 确定架构
+            if pe.FILE_HEADER.Machine == 0x14c:  # IMAGE_FILE_MACHINE_I386
+                arch = CS_ARCH_X86
+                mode = CS_MODE_32
+            elif pe.FILE_HEADER.Machine == 0x8664:  # IMAGE_FILE_MACHINE_AMD64
+                arch = CS_ARCH_X86
+                mode = CS_MODE_64
+            else:
+                logger.warning(f"不支持的架构: {pe.FILE_HEADER.Machine}")
+                return False
+            
+            # 创建Capstone实例
+            md = Cs(arch, mode)
+            md.detail = True
+            
+            # 打开输出文件
+            with open(output_file, 'w') as f:
+                f.write(f"反汇编 {os.path.basename(file_path)}\n")
+                f.write(f"架构: {'x64' if mode == CS_MODE_64 else 'x86'}\n")
+                f.write(f"入口点: 0x{pe.OPTIONAL_HEADER.AddressOfEntryPoint:08x}\n")
+                f.write("=" * 80 + "\n\n")
+                
+                # 反汇编每个区段
+                for section in pe.sections:
+                    section_name = section.Name.decode('utf-8', errors='ignore').rstrip('\x00')
+                    f.write(f"\n区段: {section_name}\n")
+                    f.write("-" * 40 + "\n\n")
+                    
+                    # 获取区段数据
+                    section_data = section.get_data()
+                    
+                    # 跳过空区段或非代码区段
+                    if len(section_data) == 0 or not (section.Characteristics & 0x20000000):  # IMAGE_SCN_CNT_CODE
+                        f.write("非代码区段或空区段，跳过...\n")
+                        continue
+                    
+                    # 计算虚拟地址
+                    virtual_address = pe.OPTIONAL_HEADER.ImageBase + section.VirtualAddress
+                    
+                    # 反汇编
+                    try:
+                        for i, (address, size, mnemonic, op_str) in enumerate(md.disasm_lite(section_data, virtual_address)):
+                            f.write(f"0x{address:08x}:  {mnemonic:8s} {op_str}\n")
+                            
+                            # 限制输出数量以避免过大的文件
+                            if i >= 50000:  # 每个区段最多显示5万条指令
+                                f.write("... [反汇编被截断，输出过大] ...\n")
+                                break
+                    except Exception as e:
+                        f.write(f"反汇编错误: {str(e)}\n")
+            
+            # 提取函数列表
+            if hasattr(pe, 'DIRECTORY_ENTRY_EXPORT'):
+                with open(output_file, 'a') as f:
+                    f.write("\n\n导出函数:\n")
+                    f.write("-" * 40 + "\n\n")
+                    
+                    for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+                        if exp.name:
+                            f.write(f"0x{exp.address:08x}: {exp.name.decode()}\n")
+            
+            pe.close()
+            return True
+        except ImportError as e:
+            logger.error(f"Capstone反汇编错误 (缺少依赖): {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"Capstone反汇编错误: {str(e)}")
+            return False
+    
+    def _disassemble_with_radare2(self, file_path: str, output_file: str) -> bool:
+        """
+        使用radare2反汇编PE文件
+        
+        Args:
+            file_path: 要反汇编的PE文件路径
+            output_file: 输出文件路径
+            
+        Returns:
+            是否成功
+        """
+        try:
+            # 检查radare2是否可用
+            if not self._check_command('r2'):
+                return False
+            
+            # 创建radare2命令脚本
+            cmd_file = tempfile.NamedTemporaryFile(delete=False, mode='w')
+            cmd_file.write("aa\n")       # 分析所有
+            cmd_file.write("afl\n")      # 所有函数列表
+            cmd_file.write("s entry0\n") # 跳转到入口点
+            cmd_file.write("pdf\n")      # 反汇编函数
+            cmd_file.write("s main\n")   # 跳转到main
+            cmd_file.write("pdf\n")      # 反汇编main
+            cmd_file.close()
+            
+            # 执行radare2
+            try:
+                subprocess.run(
+                    ['r2', '-q', '-i', cmd_file.name, '-c', 'quit', file_path],
+                    stdout=open(output_file, 'w'),
+                    stderr=subprocess.STDOUT,
+                    check=True,
+                    timeout=300  # 5分钟超时
+                )
+                
+                # 如果文件大小为0，认为反汇编失败
+                if os.path.getsize(output_file) == 0:
+                    os.unlink(cmd_file.name)
+                    return False
+                
+                # 尝试执行更全面的反汇编
+                with open(output_file, 'a') as f:
+                    f.write("\n\n=== 完整反汇编 ===\n\n")
+                
+                # 导出所有发现的函数
+                try:
+                    cmd_file2 = tempfile.NamedTemporaryFile(delete=False, mode='w')
+                    cmd_file2.write("aa\n")        # 分析所有
+                    cmd_file2.write("afl~[0]>\n")  # 获取所有函数地址
+                    cmd_file2.close()
+                    
+                    # 获取函数地址列表
+                    func_output = subprocess.check_output(
+                        ['r2', '-q', '-i', cmd_file2.name, '-c', 'quit', file_path],
+                        stderr=subprocess.STDOUT,
+                        timeout=60  # 1分钟超时
+                    )
+                    
+                    func_addresses = func_output.decode('utf-8', errors='ignore').splitlines()
+                    
+                    # 为每个函数执行反汇编
+                    for i, addr in enumerate(func_addresses[:100]):  # 限制为前100个函数
+                        if addr.strip():
+                            cmd_file3 = tempfile.NamedTemporaryFile(delete=False, mode='w')
+                            cmd_file3.write(f"s {addr}\n")  # 跳转到函数地址
+                            cmd_file3.write("pdf\n")        # 反汇编函数
+                            cmd_file3.close()
+                            
+                            # 执行反汇编并追加到输出
+                            with open(output_file, 'a') as f:
+                                f.write(f"\n\n--- 函数 {addr} ---\n\n")
+                            
+                            subprocess.run(
+                                ['r2', '-q', '-i', cmd_file3.name, '-c', 'quit', file_path],
+                                stdout=open(output_file, 'a'),
+                                stderr=subprocess.DEVNULL,
+                                timeout=30  # 30秒超时
+                            )
+                            
+                            os.unlink(cmd_file3.name)
+                except Exception as e:
+                    logger.warning(f"获取详细函数反汇编失败: {str(e)}")
+                    # 继续执行，因为我们已经有了主要的反汇编
+                
+                os.unlink(cmd_file.name)
+                if os.path.exists(cmd_file2.name):
+                    os.unlink(cmd_file2.name)
+                
+                return True
+            except subprocess.TimeoutExpired:
+                logger.warning("radare2反汇编超时")
+                os.unlink(cmd_file.name)
+                return False
+        except Exception as e:
+            logger.error(f"radare2反汇编错误: {str(e)}")
+            return False
+    
+    def _disassemble_with_objdump(self, file_path: str, output_file: str) -> bool:
+        """
+        使用objdump反汇编PE文件 (适用于Linux环境)
+        
+        Args:
+            file_path: 要反汇编的PE文件路径
+            output_file: 输出文件路径
+            
+        Returns:
+            是否成功
+        """
+        # 检查是否是Linux环境并且objdump是否可用
+        if not self._check_command('objdump'):
+            return False
+        
+        try:
+            # 执行objdump
+            subprocess.run(
+                ['objdump', '-d', '-M', 'intel', file_path],
+                stdout=open(output_file, 'w'),
+                stderr=subprocess.DEVNULL,
+                check=True,
+                timeout=300  # 5分钟超时
+            )
+            
+            # 如果文件大小为0，认为反汇编失败
+            if os.path.getsize(output_file) == 0:
+                return False
+            
+            return True
+        except Exception as e:
+            logger.error(f"objdump反汇编错误: {str(e)}")
+            return False
     
     def _optimize_strategies(self) -> None:
         """根据检测到的保护类型调整策略优先级"""
@@ -1731,7 +2020,7 @@ class UniversalUnpacker:
     
     def _generate_html_report(self, output_path: str) -> None:
         """
-        生成HTML格式的报告
+        生成HTML格式的分析报告
         
         Args:
             output_path: 输出文件路径
@@ -1743,13 +2032,13 @@ class UniversalUnpacker:
     <meta charset="UTF-8">
     <title>脱壳报告</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; color: #333; }
         h1, h2, h3 { color: #333; }
         .container { max-width: 1000px; margin: 0 auto; }
-        .section { margin-bottom: 20px; }
+        .section { margin-bottom: 30px; }
         .success { color: green; font-weight: bold; }
         .failure { color: red; font-weight: bold; }
-        .data-block { background-color: #f5f5f5; padding: 10px; border-radius: 5px; margin-top: 10px; }
+        .data-block { background-color: #f5f5f5; padding: 10px; border-radius: 5px; margin-top: 10px; overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; }
         th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
         tr:hover { background-color: #f5f5f5; }
@@ -1786,6 +2075,11 @@ class UniversalUnpacker:
         <div class="section">
             <h2>OEP候选</h2>
             {oep_candidates}
+        </div>
+        
+        <div class="section">
+            <h2>反汇编</h2>
+            {disassembly}
         </div>
         
         <div class="section">
@@ -1867,6 +2161,33 @@ class UniversalUnpacker:
         else:
             oep_candidates_html = "<p>未找到OEP候选</p>"
         
+        # 格式化反汇编信息
+        disassembly_html = ""
+        if 'disassembly_file' in self.analysis_result:
+            disassembly_path = self.analysis_result['disassembly_file']
+            if os.path.exists(disassembly_path):
+                disassembly_html = f"""
+                <p>反汇编已完成。<a href="{os.path.relpath(disassembly_path, self.output_dir)}">下载反汇编文件</a></p>
+                <div class="data-block">
+                    <p><strong>预览 (前1000行):</strong></p>
+                    <pre style="max-height: 300px; overflow-y: auto;">
+                """
+                
+                # 添加反汇编预览
+                with open(disassembly_path, 'r', errors='ignore') as f:
+                    lines = f.readlines()
+                    preview_lines = lines[:1000]  # 只显示前1000行
+                    disassembly_html += "".join(preview_lines).replace("<", "&lt;").replace(">", "&gt;")
+                
+                disassembly_html += """
+                    </pre>
+                </div>
+                """
+            else:
+                disassembly_html = "<p>反汇编文件不存在</p>"
+        else:
+            disassembly_html = "<p>未执行反汇编</p>"
+        
         # 格式化区段信息
         sections_html = ""
         for section in self.sections:
@@ -1906,6 +2227,7 @@ class UniversalUnpacker:
             protections=protections_html,
             unpacked_files=unpacked_files_html,
             oep_candidates=oep_candidates_html,
+            disassembly=disassembly_html,
             oep=f"0x{self.analysis_result.get('oep', 0):08X}",
             machine_type=self.analysis_result.get('machine_type', 'Unknown'),
             subsystem=self.analysis_result.get('subsystem', 'Unknown'),
@@ -1921,10 +2243,12 @@ class UniversalUnpacker:
 
 def main():
     """主程序入口"""
-    parser = argparse.ArgumentParser(description='通用脱壳工具')
+    parser = argparse.ArgumentParser(description='增强型通用脱壳工具')
     parser.add_argument('input', help='输入可执行文件路径')
     parser.add_argument('-o', '--output', help='输出目录')
     parser.add_argument('-s', '--strategies', help='脱壳策略,逗号分隔 (static,dynamic,iat_fix)', default='static,dynamic,iat_fix')
+    parser.add_argument('-d', '--disassemble', action='store_true', help='执行反汇编', default=True)
+    parser.add_argument('-n', '--no-disassemble', action='store_true', help='不执行反汇编')
     parser.add_argument('-v', '--verbose', action='store_true', help='显示详细日志')
     
     args = parser.parse_args()
@@ -1935,12 +2259,19 @@ def main():
     
     try:
         strategies = args.strategies.split(',')
-        unpacker = UniversalUnpacker(args.input, args.output, strategies)
+        
+        # 如果使用了no-disassemble参数，则关闭反汇编
+        disassemble = not args.no_disassemble if args.no_disassemble else args.disassemble
+        
+        unpacker = UniversalUnpacker(args.input, args.output, strategies, disassemble)
         success = unpacker.unpack()
         
         if success:
             print(f"脱壳成功! 结果已保存到 {unpacker.output_dir}")
             print(f"最佳脱壳结果: {unpacker.analysis_result.get('best_result', '无')}")
+            
+            if 'disassembly_file' in unpacker.analysis_result:
+                print(f"反汇编文件: {unpacker.analysis_result['disassembly_file']}")
             
             if 'detected_protections' in unpacker.analysis_result:
                 print("检测到的保护:")
@@ -1949,7 +2280,11 @@ def main():
             
             return 0
         else:
-            print("脱壳失败。请查看日志获取详细信息。")
+            print("脱壳未完全成功。请查看报告获取详细信息。")
+            
+            if 'disassembly_file' in unpacker.analysis_result:
+                print(f"反汇编文件已生成: {unpacker.analysis_result['disassembly_file']}")
+                
             return 1
     except Exception as e:
         logger.error(f"错误: {str(e)}")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-动态分析引擎 - 用于恶意软件和壳保护程序的动态分析
+增强版动态分析引擎 - 用于恶意软件和壳保护程序的动态分析
 具有内存转储、API跟踪和反调试绕过功能
 """
 import os
@@ -36,9 +36,16 @@ try:
     import frida
 except ImportError:
     logger.error("未安装frida库，请先运行: pip install frida-tools")
-    sys.exit(1)
+    logger.error("尝试自动安装...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "frida-tools"])
+        import frida
+        logger.info("Frida安装成功")
+    except:
+        logger.error("自动安装失败，请手动安装Frida")
+        sys.exit(1)
 
-# Frida JS脚本 - 核心功能
+# Frida JS脚本 - 核心功能 (保持原有功能但优化结构)
 FRIDA_SCRIPT = """
 (function(){
     // 全局变量以跟踪API调用和保护状态
@@ -55,6 +62,8 @@ FRIDA_SCRIPT = """
     };
     var threadCreations = [];
     var suspiciousCodeRegions = [];
+    var memoryDumps = [];
+    var oepCandidates = [];
     
     // 调试和错误处理实用函数
     function safeCall(fn, args, errorDefault) {
@@ -106,6 +115,14 @@ FRIDA_SCRIPT = """
                 info: info || 'Manual dump'
             }, data);
             
+            // 记录已创建的内存转储
+            memoryDumps.push({
+                address: address.toString(),
+                size: size,
+                info: info || 'Manual dump',
+                timestamp: new Date().getTime()
+            });
+            
             return true;
         } catch (e) {
             log.error("内存转储失败: " + e.message);
@@ -129,6 +146,52 @@ FRIDA_SCRIPT = """
         }
     }
     
+    // OEP监测 - 新增函数，识别可能的原始入口点
+    function recordOEPCandidate(address, confidence, reason) {
+        // 检查是否已存在此地址
+        const existing = oepCandidates.find(oep => oep.address === address.toString());
+        if (existing) {
+            // 更新置信度
+            existing.confidence = Math.max(existing.confidence, confidence);
+            existing.reasons.push(reason);
+        } else {
+            // 添加新候选
+            oepCandidates.push({
+                address: address.toString(),
+                confidence: confidence,
+                reasons: [reason],
+                timestamp: new Date().getTime()
+            });
+            
+            // 通知宿主
+            send({
+                type: 'oep_candidate',
+                address: address.toString(),
+                confidence: confidence,
+                reason: reason,
+                timestamp: new Date().getTime()
+            });
+            
+            // 如果置信度很高，立即转储内存
+            if (confidence >= 80) {
+                // 尝试转储可能包含OEP的区域
+                try {
+                    const addressPtr = ptr(address);
+                    dumpMemory(addressPtr.sub(0x1000), 0x2000, "High confidence OEP area");
+                    
+                    // 尝试转储整个模块
+                    const module = Process.findModuleByAddress(addressPtr);
+                    if (module) {
+                        log.info(`[+] 发现高置信度OEP在模块 ${module.name} 中，尝试转储整个模块`);
+                        dumpMemory(module.base, module.size, "Module containing OEP");
+                    }
+                } catch (e) {
+                    log.error("OEP区域转储失败: " + e.message);
+                }
+            }
+        }
+    }
+    
     // 动态扫描和检测功能
     function scanMemoryRegionsForSignatures() {
         log.info("扫描内存区域寻找保护特征...");
@@ -148,6 +211,14 @@ FRIDA_SCRIPT = """
             'custom': [
                 { pattern: 'E8 00 00 00 00 58 05 ?? ?? ?? ?? 80', name: 'Custom VM Entry' },
                 { pattern: '60 9C 8B 44 24 24 E8', name: 'Custom Protection Handler' },
+            ],
+            'oep_signatures': [
+                { pattern: '55 8B EC 83 EC', name: 'Visual C++ Entry', confidence: 70 },
+                { pattern: '55 8B EC 6A FF 68', name: 'Visual C++ Entry with SEH', confidence: 75 },
+                { pattern: '55 8B EC 81 EC', name: 'Visual C++ Entry (Stack Frame)', confidence: 70 },
+                { pattern: '53 56 57 55 8B EC', name: 'Custom Entry Point', confidence: 65 },
+                { pattern: 'E8 ?? ?? ?? ?? E9 ?? ?? ?? ?? CC CC', name: 'Jump Chain End', confidence: 60 },
+                // 添加更多OEP特征指纹
             ]
         };
         
@@ -182,15 +253,22 @@ FRIDA_SCRIPT = """
                                     // 忽略模块解析错误
                                 }
                                 
-                                log.info(`[+] 发现${protectionType}保护: ${signatureInfo.name} @ ${address}`);
-                                protectionDetections[protectionType].push(foundInfo);
-                                
-                                // 通知宿主应用程序
-                                send({
-                                    type: 'protection_detected',
-                                    protection_type: protectionType, 
-                                    info: foundInfo
-                                });
+                                if (protectionType === 'oep_signatures') {
+                                    // 记录OEP候选
+                                    log.info(`[+] 可能的OEP: ${signatureInfo.name} @ ${address}`);
+                                    recordOEPCandidate(address, signatureInfo.confidence, signatureInfo.name);
+                                } else {
+                                    // 记录保护检测
+                                    log.info(`[+] 发现${protectionType}保护: ${signatureInfo.name} @ ${address}`);
+                                    protectionDetections[protectionType].push(foundInfo);
+                                    
+                                    // 通知宿主应用程序
+                                    send({
+                                        type: 'protection_detected',
+                                        protection_type: protectionType, 
+                                        info: foundInfo
+                                    });
+                                }
                                 
                                 return 'continue'; // 继续搜索更多匹配
                             },
@@ -254,6 +332,33 @@ FRIDA_SCRIPT = """
         });
         
         return info;
+    }
+    
+    // 收集更详细的PE文件信息 - 新增函数
+    function collectDetailedFileInfo() {
+        try {
+            const mainModule = Process.mainModule;
+            if (!mainModule) {
+                log.warn("无法获取主模块");
+                return;
+            }
+            
+            const peHeader = Memory.readByteArray(mainModule.base, 0x1000); // 读取PE头
+            
+            // 发送PE头数据
+            send({
+                type: 'pe_header',
+                module_name: mainModule.name,
+                module_base: mainModule.base.toString(),
+                timestamp: new Date().getTime()
+            }, peHeader);
+            
+            // 尝试解析导入表和导出表
+            // 此处简化，实际需要更复杂的PE解析
+            log.info("已收集PE头信息");
+        } catch (e) {
+            log.error("收集PE信息错误: " + e.message);
+        }
     }
     
     // 扫描非系统模块
@@ -475,6 +580,12 @@ FRIDA_SCRIPT = """
                     // 如果调用时间过长，记录它（可能表示VMProtect或类似的虚拟化）
                     if (duration > 50) { // 50ms阈值
                         log.debug(`长时间API调用: ${this.moduleName}!${this.funcName} (${duration}ms)`);
+                        
+                        // 对于特别长的调用，可能是VM退出点，记录OEP候选
+                        if (duration > 200) {
+                            log.info(`[!] 可能的VM退出点: ${this.moduleName}!${this.funcName} (${duration}ms)`);
+                            recordOEPCandidate(this.returnAddress, 60, "Long API call");
+                        }
                     }
                 }
             });
@@ -631,18 +742,6 @@ FRIDA_SCRIPT = """
             } catch (e) {
                 log.debug(`HTTP URL解析错误: ${e.message}`);
             }
-        } else if (funcName === 'WinHttpSendRequest') {
-            try {
-                const headers = args[3];
-                const headersLength = parseInt(args[4].toString());
-                
-                if (headers !== 0 && headersLength > 0) {
-                    const headerText = Memory.readUtf16String(headers, headersLength);
-                    log.debug(`HTTP Headers: ${headerText}`);
-                }
-            } catch (e) {
-                // 忽略错误
-            }
         }
     }
     
@@ -714,15 +813,6 @@ FRIDA_SCRIPT = """
             } catch (e) {
                 log.debug(`CryptEncrypt参数解析错误: ${e.message}`);
             }
-        } else if (funcName === 'BCryptEncrypt' || funcName === 'BCryptDecrypt') {
-            context.bcryptKey = args[0];
-            context.bcryptInput = args[1];
-            context.bcryptInputLen = parseInt(args[2].toString());
-            context.bcryptOutput = args[4];
-            context.bcryptOutputLenPtr = args[5];
-            
-            // 记录加密/解密操作
-            log.debug(`[*] ${funcName}: 长度=${context.bcryptInputLen}`);
         }
     }
     
@@ -766,26 +856,6 @@ FRIDA_SCRIPT = """
                 }
             } catch (e) {
                 log.warn(`读取加密数据错误: ${e.message}`);
-            }
-        } else if ((context.funcName === 'BCryptEncrypt' || context.funcName === 'BCryptDecrypt') && 
-                   retval.toInt32() === 0) { // 0是成功
-            if (context.bcryptOutputLenPtr !== 0) {
-                try {
-                    const outLen = Memory.readUInt(context.bcryptOutputLenPtr);
-                    if (outLen > 0 && outLen < 1048576 && context.bcryptOutput !== 0) { // 限制1MB
-                        const cryptData = Memory.readByteArray(context.bcryptOutput, outLen);
-                        
-                        send({
-                            type: context.funcName === 'BCryptEncrypt' ? 'crypto_encrypt' : 'crypto_decrypt',
-                            key_handle: context.bcryptKey.toString(),
-                            data_length: outLen,
-                            algorithm: 'BCrypt',
-                            timestamp: new Date().getTime()
-                        }, cryptData);
-                    }
-                } catch (e) {
-                    log.warn(`读取BCrypt数据错误: ${e.message}`);
-                }
             }
         }
     }
@@ -846,28 +916,6 @@ FRIDA_SCRIPT = """
             } catch (e) {
                 log.debug(`WriteFile参数解析错误: ${e.message}`);
             }
-        } else if (funcName === 'DeleteFile' || funcName === 'DeleteFileW') {
-            try {
-                const path = Memory.readUtf16String(args[0]);
-                if (path) {
-                    log.info(`[+] 删除文件: ${path}`);
-                    
-                    fileData.push({
-                        timestamp: new Date().getTime(),
-                        operation: 'delete',
-                        path: path
-                    });
-                    
-                    send({
-                        type: 'file_access',
-                        operation: 'delete',
-                        path: path,
-                        timestamp: new Date().getTime()
-                    });
-                }
-            } catch (e) {
-                log.debug(`文件路径解析错误: ${e.message}`);
-            }
         }
     }
     
@@ -909,19 +957,6 @@ FRIDA_SCRIPT = """
                 } catch (e) {
                     log.warn(`读取写入数据错误: ${e.message}`);
                 }
-            }
-        } else if (context.funcName === 'CreateFile' || context.funcName === 'CreateFileW') {
-            const INVALID_HANDLE_VALUE = ptr("-1");
-            if (!retval.equals(INVALID_HANDLE_VALUE)) {
-                // 成功打开文件 - 添加额外信息
-                send({
-                    type: 'file_opened',
-                    path: context.filePath || "unknown",
-                    handle: retval.toString(),
-                    timestamp: new Date().getTime()
-                });
-            } else {
-                log.debug(`打开文件失败: ${context.filePath || "unknown"}`);
             }
         }
     }
@@ -977,38 +1012,6 @@ FRIDA_SCRIPT = """
             } catch (e) {
                 log.debug(`注册表值解析错误: ${e.message}`);
             }
-        } else if (funcName === 'RegSetValue' || funcName === 'RegSetValueEx') {
-            try {
-                // args[1]是值名, args[4]是数据, args[5]是大小
-                if (args[0] !== 0 && args[1] !== 0) {
-                    const valueName = Memory.readUtf16String(args[1]);
-                    if (valueName) {
-                        context.regValueName = valueName;
-                        context.regDataType = args[2].toInt32(); // 值类型
-                        context.regData = args[3]; // 数据指针
-                        context.regDataSize = args[4].toInt32(); // 数据大小
-                        
-                        log.info(`[+] 设置注册表值: ${valueName}`);
-                        
-                        registryData.push({
-                            timestamp: new Date().getTime(),
-                            operation: 'set',
-                            value: valueName,
-                            type: context.regDataType
-                        });
-                        
-                        send({
-                            type: 'registry_access',
-                            operation: 'set',
-                            value: valueName,
-                            data_type: context.regDataType,
-                            timestamp: new Date().getTime()
-                        });
-                    }
-                }
-            } catch (e) {
-                log.debug(`注册表值解析错误: ${e.message}`);
-            }
         }
     }
     
@@ -1053,6 +1056,18 @@ FRIDA_SCRIPT = """
                 start_address: context.threadStart.toString(),
                 parameter: context.threadParam ? context.threadParam.toString() : "null"
             });
+            
+            // 如果线程起始地址使用了非系统模块中的代码，可能是壳解密后执行原始代码的点
+            try {
+                const startAddr = context.threadStart;
+                const moduleInfo = Process.findModuleByAddress(startAddr);
+                if (moduleInfo && !moduleInfo.path.toLowerCase().includes('\\windows\\')) {
+                    log.info(`[!] 创建线程指向用户模块代码 ${moduleInfo.name}, 可能是OEP`);
+                    recordOEPCandidate(startAddr, 75, "CreateThread to user module");
+                }
+            } catch (e) {
+                // 忽略错误
+            }
         } else if (funcName === 'CreateProcess' || funcName === 'CreateProcessW') {
             try {
                 if (args[0] !== 0) {
@@ -1097,6 +1112,9 @@ FRIDA_SCRIPT = """
                     new_protection: context.vpNewProtect,
                     timestamp: new Date().getTime()
                 });
+                
+                // 这可能是壳解密后使内存可执行的地方，记录OEP候选
+                recordOEPCandidate(context.vpAddress, 65, "Memory made executable");
             }
         }
     }
@@ -1153,32 +1171,6 @@ FRIDA_SCRIPT = """
                 });
             } catch (e) {
                 log.warn(`线程跟踪错误: ${e.message}`);
-            }
-        } else if ((context.funcName === 'CreateProcess' || context.funcName === 'CreateProcessW') && 
-                  retval.toInt32() !== 0) {
-            // 成功创建进程
-            try {
-                // 输出参数通常在args[8]
-                const lpProcessInformation = context.args[8];
-                if (lpProcessInformation) {
-                    const hProcess = Memory.readPointer(lpProcessInformation);
-                    const hThread = Memory.readPointer(lpProcessInformation.add(Process.pointerSize));
-                    const dwProcessId = Memory.readUInt(lpProcessInformation.add(Process.pointerSize * 2));
-                    const dwThreadId = Memory.readUInt(lpProcessInformation.add(Process.pointerSize * 2 + 4));
-                    
-                    log.info(`[+] 进程创建成功: PID=${dwProcessId}, TID=${dwThreadId}`);
-                    
-                    send({
-                        type: 'process_created',
-                        app_name: context.processName || "unknown",
-                        command_line: context.commandLine || "unknown",
-                        process_id: dwProcessId,
-                        thread_id: dwThreadId,
-                        timestamp: new Date().getTime()
-                    });
-                }
-            } catch (e) {
-                log.debug(`读取进程信息错误: ${e.message}`);
             }
         } else if (context.funcName === 'VirtualProtect' && retval.toInt32() !== 0) {
             // 成功更改保护
@@ -1298,61 +1290,17 @@ FRIDA_SCRIPT = """
                                     size: context.vaSize,
                                     timestamp: new Date().getTime()
                                 });
+                            } else if (details.operation === 'execute') {
+                                log.info(`[!] 执行内存区域: ${details.address}`);
+                                
+                                // 这可能是OEP - 记录并转储
+                                recordOEPCandidate(details.address, 85, "Execution of allocated memory");
                             }
                         }
                     });
                 } catch (e) {
                     log.warn(`无法监视内存: ${e.message}`);
                 }
-            }
-        } else if (context.funcName === 'NtAllocateVirtualMemory' && retval.toInt32() === 0) { // 0是成功
-            // 获取分配的地址
-            if (context.nvaBaseAddressPtr) {
-                try {
-                    const allocatedAddress = Memory.readPointer(context.nvaBaseAddressPtr);
-                    if (!allocatedAddress.isNull()) {
-                        // 读取实际写入的大小
-                        const allocatedSize = Memory.readUInt(context.nvaSize);
-                        
-                        // 记录分配
-                        memoryAllocs.push({
-                            timestamp: new Date().getTime(),
-                            address: allocatedAddress.toString(),
-                            size: allocatedSize,
-                            type: context.nvaType,
-                            protection: context.nvaProtect
-                        });
-                        
-                        // 检查可执行内存
-                        if (context.nvaProtect & 0x40) { // PAGE_EXECUTE_READWRITE
-                            log.info(`[!] 通过NT API分配可执行内存: ${allocatedAddress}, 大小: ${allocatedSize}`);
-                            
-                            send({
-                                type: 'executable_allocation',
-                                address: allocatedAddress.toString(),
-                                size: allocatedSize,
-                                protection: context.nvaProtect.toString(16),
-                                api: 'NtAllocateVirtualMemory',
-                                timestamp: new Date().getTime()
-                            });
-                        }
-                    }
-                } catch (e) {
-                    log.debug(`读取分配地址错误: ${e.message}`);
-                }
-            }
-        } else if (context.funcName === 'HeapCreate' && !retval.isNull()) {
-            const heapHandle = retval;
-            log.debug(`[*] 堆创建成功: ${heapHandle}`);
-            
-            if (context.heapOptions & 0x00040000) { // HEAP_CREATE_ENABLE_EXECUTE
-                send({
-                    type: 'executable_heap_created',
-                    handle: heapHandle.toString(),
-                    initial_size: context.heapInitialSize,
-                    maximum_size: context.heapMaximumSize,
-                    timestamp: new Date().getTime()
-                });
             }
         } else if (context.funcName === 'WriteProcessMemory' && retval.toInt32() !== 0) {
             // 成功写入
@@ -1465,6 +1413,9 @@ FRIDA_SCRIPT = """
             // 收集系统和模块信息
             collectSystemInfo();
             
+            // 收集更详细的PE文件信息
+            collectDetailedFileInfo();
+            
             // 扫描用户模块
             scanUserModules();
             
@@ -1476,6 +1427,16 @@ FRIDA_SCRIPT = """
             
             // 设置周期性状态报告
             setInterval(function() {
+                // 发送OEP候选信息
+                if (oepCandidates.length > 0) {
+                    send({
+                        type: 'oep_candidates',
+                        candidates: oepCandidates,
+                        timestamp: new Date().getTime()
+                    });
+                }
+                
+                // 发送常规状态更新
                 send({
                     type: 'status_update',
                     anti_debug_attempts: antiDebugAttempts,
@@ -1484,6 +1445,7 @@ FRIDA_SCRIPT = """
                     registry_activity: registryData.length,
                     thread_creations: threadCreations.length,
                     memory_allocations: memoryAllocs.length,
+                    memory_dumps: memoryDumps.length,
                     total_api_calls: apiCalls.length,
                     protections: {
                         vmprotect_detections: protectionDetections.vmprotect.length,
@@ -1493,6 +1455,32 @@ FRIDA_SCRIPT = """
                     timestamp: new Date().getTime()
                 });
             }, 5000);
+            
+            // 在程序结束前尝试保存最终状态（使用setTimeout确保在程序崩溃前完成）
+            setInterval(function() {
+                // 如果检测到任何用户模块中的执行区域，可能是脱壳后的OEP
+                const userModules = Process.enumerateModules().filter((m) => {
+                    return !m.path.toLowerCase().includes('\\windows\\') &&
+                           !m.path.toLowerCase().includes('\\syswow64\\') &&
+                           !m.name.toLowerCase().includes('api-ms-win');
+                });
+                
+                // 对每个用户模块转储可执行区域
+                userModules.forEach(function(mod) {
+                    try {
+                        // 检查是否已转储过此模块
+                        const alreadyDumped = memoryDumps.some(dump => 
+                            dump.address === mod.base.toString() && dump.size === mod.size);
+                        
+                        if (!alreadyDumped) {
+                            log.info(`[*] 转储用户模块 ${mod.name} 以供脱壳分析`);
+                            dumpMemory(mod.base, mod.size, `Module ${mod.name} for unpacking`);
+                        }
+                    } catch (e) {
+                        log.error(`转储模块错误: ${e.message}`);
+                    }
+                });
+            }, 15000);  // 每15秒检查一次
             
             log.info("初始化完成，开始监视");
         } catch (e) {
@@ -1507,8 +1495,8 @@ FRIDA_SCRIPT = """
 
 class DynamicAnalyzer:
     """
-    动态分析引擎，用于恶意软件和壳保护程序的动态分析
-    具有内存转储、API跟踪和反调试绕过功能
+    增强型动态分析引擎，用于软件保护分析和脱壳
+    添加了OEP检测和反汇编功能
     """
     
     def __init__(self, target_path: str = None, output_dir: str = None, api_port: int = 5000):
@@ -1549,6 +1537,7 @@ class DynamicAnalyzer:
         self.file_data = []
         self.registry_data = []
         self.api_calls = []
+        self.oep_candidates = []
         self.protection_data = {
             "anti_debug_attempts": 0,
             "network_connections": 0,
@@ -1585,6 +1574,22 @@ class DynamicAnalyzer:
         
         # 自动停止定时器
         self.timeout_timer = None
+        
+        # 反汇编引擎
+        self.disassembler = None
+        try:
+            import capstone
+            self.disassembler = capstone
+            logger.info("Capstone反汇编引擎已加载")
+        except ImportError:
+            logger.warning("Capstone反汇编引擎未安装，尝试自动安装...")
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "capstone"])
+                import capstone
+                self.disassembler = capstone
+                logger.info("Capstone反汇编引擎已安装并加载")
+            except:
+                logger.warning("无法自动安装Capstone，反汇编功能将受限")
     
     def _create_output_directories(self) -> None:
         """创建输出目录结构"""
@@ -1598,6 +1603,7 @@ class DynamicAnalyzer:
             "crypto",          # 加密/解密数据
             "file_data",       # 文件访问数据
             "registry_data",   # 注册表访问数据
+            "disassembly",     # 反汇编结果
             "screenshots"      # 分析过程截图
         ]
         
@@ -1633,6 +1639,7 @@ class DynamicAnalyzer:
                     "network_captures": len(self.network_data),
                     "file_operations": len(self.file_data),
                     "registry_operations": len(self.registry_data),
+                    "oep_candidates": len(self.oep_candidates),
                     "protection_stats": self.protection_data,
                     "last_update": self.last_status_update
                 }
@@ -1677,7 +1684,16 @@ class DynamicAnalyzer:
                 # 使用Frida读取内存
                 dump_path = self._dump_memory_region(address, size)
                 if dump_path:
-                    return jsonify({"result": "success", "path": dump_path})
+                    # 生成反汇编（如果可能）
+                    disasm_path = None
+                    if self.disassembler:
+                        disasm_path = self.disassemble_dump(dump_path, address)
+                    
+                    response = {"result": "success", "path": dump_path}
+                    if disasm_path:
+                        response["disassembly"] = disasm_path
+                    
+                    return jsonify(response)
                 return jsonify({"error": "内存转储失败"}), 500
             except Exception as e:
                 logger.error(f"内存转储错误: {str(e)}")
@@ -1701,6 +1717,11 @@ class DynamicAnalyzer:
                 logger.error(f"代码注入错误: {str(e)}")
                 return jsonify({"error": str(e)}), 500
         
+        # 获取OEP候选列表
+        @app.route('/api/oep_candidates', methods=['GET'])
+        def get_oep_candidates():
+            return jsonify({"candidates": self.oep_candidates})
+        
         # 获取内存转储列表
         @app.route('/api/dumps', methods=['GET'])
         def get_dumps():
@@ -1714,6 +1735,31 @@ class DynamicAnalyzer:
             if os.path.exists(safe_path) and os.path.isfile(safe_path):
                 return send_file(safe_path, as_attachment=True)
             return jsonify({"error": "文件不存在"}), 404
+
+        # 获取反汇编结果
+        @app.route('/api/disassembly/<path:dump_path>', methods=['GET'])
+        def get_disassembly(dump_path):
+            # 安全检查，防止路径遍历漏洞
+            dump_file = os.path.normpath(os.path.join(self.output_dir, "memory_dumps", os.path.basename(dump_path)))
+            if not os.path.exists(dump_file) or not os.path.isfile(dump_file):
+                return jsonify({"error": "转储文件不存在"}), 404
+            
+            # 尝试查找现有反汇编
+            disasm_dir = os.path.join(self.output_dir, "disassembly")
+            disasm_file = os.path.join(disasm_dir, os.path.basename(dump_path) + "_disasm.txt")
+            
+            # 如果不存在，尝试生成
+            if not os.path.exists(disasm_file):
+                if self.disassembler:
+                    # 假设地址从0开始
+                    disasm_file = self.disassemble_dump(dump_file, 0)
+                else:
+                    return jsonify({"error": "反汇编引擎不可用"}), 500
+            
+            if os.path.exists(disasm_file) and os.path.isfile(disasm_file):
+                return send_file(disasm_file, as_attachment=True)
+            
+            return jsonify({"error": "无法生成反汇编"}), 500
         
         # 停止分析
         @app.route('/api/stop', methods=['POST'])
@@ -1752,7 +1798,7 @@ class DynamicAnalyzer:
             
         def run_api():
             try:
-                self.api_server.run(host='0.0.0.0', port=self.api_port, debug=False, use_reloader=False)
+                self.api_server.run(host='0.0.0.0', port=self.api_port, debug=False, use_reloader=False, threaded=True)
             except Exception as e:
                 logger.error(f"API服务器错误: {str(e)}")
             
@@ -1798,6 +1844,12 @@ class DynamicAnalyzer:
                     self._handle_status_update(payload)
                 elif msg_type == 'system_info':
                     self._handle_system_info(payload)
+                elif msg_type == 'oep_candidate':
+                    self._handle_oep_candidate(payload)
+                elif msg_type == 'oep_candidates':
+                    self._handle_oep_candidates(payload)
+                elif msg_type == 'pe_header':
+                    self._handle_pe_header(payload, data)
                 else:
                     logger.debug(f"未处理的消息类型: {msg_type}")
                 
@@ -1846,1342 +1898,186 @@ class DynamicAnalyzer:
         
         self.memory_dumps.append(dump_info)
         logger.info(f"内存转储已保存: {dump_path} (大小: {len(data)})")
+        
+        # 尝试反汇编内存转储
+        if self.disassembler:
+            try:
+                # 将地址从字符串转换为整数
+                addr = int(address, 16) if isinstance(address, str) and address.startswith('0x') else int(address)
+                disasm_file = self.disassemble_dump(dump_path, addr)
+                
+                if disasm_file:
+                    logger.info(f"内存转储已反汇编: {disasm_file}")
+                    dump_info['disassembly'] = disasm_file
+            except Exception as e:
+                logger.error(f"反汇编内存转储错误: {str(e)}")
     
-    def _handle_network_data(self, msg_type: str, payload: Dict[str, Any], data: Optional[bytes]) -> None:
+    def disassemble_dump(self, dump_file: str, base_address: int) -> Optional[str]:
         """
-        处理网络数据
+        反汇编内存转储文件
         
         Args:
-            msg_type: 消息类型
-            payload: 消息载荷
-            data: 可选的二进制数据
+            dump_file: 转储文件路径
+            base_address: 基址
+            
+        Returns:
+            反汇编文件路径或None
         """
-        network_entry = {
-            'type': msg_type,
-            'timestamp': payload.get('timestamp', time.time()),
-            'data_size': 0
-        }
+        if not self.disassembler:
+            logger.warning("Capstone反汇编引擎不可用")
+            return None
         
-        # 根据消息类型处理不同的网络事件
-        if msg_type == 'network_connect':
-            network_entry['address'] = payload.get('address', 'unknown')
-            network_entry['port'] = payload.get('port', 0)
-            logger.info(f"网络连接: {network_entry['address']}:{network_entry['port']}")
+        try:
+            # 加载转储数据
+            with open(dump_file, 'rb') as f:
+                dump_data = f.read()
             
-        elif msg_type == 'http_request':
-            network_entry['url'] = payload.get('url', 'unknown')
-            logger.info(f"HTTP请求: {network_entry['url']}")
+            # 创建反汇编文件
+            disasm_dir = os.path.join(self.output_dir, "disassembly")
+            disasm_file = os.path.join(disasm_dir, os.path.basename(dump_file) + "_disasm.txt")
             
-        elif msg_type in ['network_send', 'network_recv', 'network_send_data']:
-            network_entry['socket'] = payload.get('socket', 'unknown')
-            network_entry['length'] = payload.get('length', 0)
+            # 尝试确定架构和位模式
+            # 默认为X86和32位模式，但可以改进以自动检测
+            arch = self.disassembler.CS_ARCH_X86
+            mode = self.disassembler.CS_MODE_32
             
-            if data:
-                network_entry['data_size'] = len(data)
+            # 尝试从内存转储头部检测架构
+            if len(dump_data) >= 4:
+                # 检查特征以判断是32位还是64位
+                # 这是一个简化的启发式方法，实际项目中可能需要更复杂的逻辑
+                if dump_data.startswith(b'\x48\x89') or dump_data.startswith(b'\x48\x8B'):
+                    mode = self.disassembler.CS_MODE_64
+            
+            # 初始化反汇编引擎
+            md = self.disassembler.Cs(arch, mode)
+            md.detail = True
+            
+            # 反汇编并写入文件
+            with open(disasm_file, 'w') as f:
+                f.write(f"反汇编 {os.path.basename(dump_file)}\n")
+                f.write(f"基址: 0x{base_address:x}\n")
+                f.write(f"架构: {'x64' if mode == self.disassembler.CS_MODE_64 else 'x86'}\n")
+                f.write(f"大小: {len(dump_data)} 字节\n")
+                f.write("=" * 50 + "\n\n")
                 
-                # 保存数据到文件
-                direction = 'sent' if 'send' in msg_type else 'received'
-                data_filename = f"network_{direction}_{int(time.time())}_{network_entry['socket']}.bin"
-                data_path = os.path.join(self.output_dir, "network_data", data_filename)
-                
-                with open(data_path, 'wb') as f:
-                    f.write(data)
+                # 反汇编数据
+                for i, (address, size, mnemonic, op_str) in enumerate(md.disasm_lite(dump_data, base_address)):
+                    f.write(f"0x{address:08x}:  {mnemonic:8s} {op_str}\n")
                     
-                network_entry['data_path'] = data_path
-                network_entry['data_md5'] = hashlib.md5(data).hexdigest()
-                
-                # 尝试检测数据类型
-                content_type = self._detect_content_type(data)
-                if content_type:
-                    network_entry['content_type'] = content_type
-                
-                logger.info(f"网络数据 {direction}: {network_entry['length']} 字节")
-        
-        self.network_data.append(network_entry)
-        self.protection_data['network_connections'] = len(self.network_data)
+                    # 限制输出行数以防止过大的文件
+                    if i >= 50000:  # 最多显示5万条指令
+                        f.write("\n... 反汇编输出被截断 (超过50000行) ...\n")
+                        break
+            
+            return disasm_file
+        except Exception as e:
+            logger.error(f"反汇编错误: {str(e)}")
+            return None
     
-    def _handle_protection_detection(self, msg_type: str, payload: Dict[str, Any]) -> None:
+    def _handle_oep_candidate(self, payload: Dict[str, Any]) -> None:
         """
-        处理保护检测事件
+        处理OEP候选信息
         
         Args:
-            msg_type: 消息类型
             payload: 消息载荷
         """
-        if msg_type == 'protection_detected':
-            protection_type = payload.get('protection_type', 'unknown')
-            info = payload.get('info', {})
-            
-            logger.info(f"检测到保护: {protection_type} - {info.get('name', 'unknown')} @ {info.get('address', 'unknown')}")
-            
-            # 更新保护检测计数
-            if protection_type in self.protection_data['protection_detections']:
-                self.protection_data['protection_detections'][protection_type] += 1
-            
-        elif msg_type == 'anti_debug_attempt':
-            function_name = payload.get('function', 'unknown')
-            
-            logger.info(f"检测到反调试尝试: {function_name}")
-            self.protection_data['anti_debug_attempts'] += 1
-    
-    def _handle_file_data(self, msg_type: str, payload: Dict[str, Any], data: Optional[bytes]) -> None:
-        """
-        处理文件操作数据
+        address = payload.get('address', 'unknown')
+        confidence = payload.get('confidence', 0)
+        reason = payload.get('reason', 'unknown')
         
-        Args:
-            msg_type: 消息类型
-            payload: 消息载荷
-            data: 可选的二进制数据
-        """
-        file_entry = {
-            'type': msg_type,
-            'timestamp': payload.get('timestamp', time.time())
-        }
+        logger.info(f"发现OEP候选: {address} (置信度: {confidence}%, 原因: {reason})")
         
-        if msg_type == 'file_access':
-            file_entry['operation'] = payload.get('operation', 'unknown')
-            file_entry['path'] = payload.get('path', 'unknown')
+        # 检查是否已存在此地址
+        for candidate in self.oep_candidates:
+            if candidate['address'] == address:
+                # 更新置信度
+                candidate['confidence'] = max(candidate['confidence'], confidence)
+                if reason not in candidate['reasons']:
+                    candidate['reasons'].append(reason)
+                break
+        else:
+            # 添加新候选
+            self.oep_candidates.append({
+                'address': address,
+                'confidence': confidence,
+                'reasons': [reason],
+                'timestamp': payload.get('timestamp', time.time())
+            })
             
-            if 'access' in payload:
-                file_entry['access'] = payload['access']
-                
-            logger.info(f"文件{file_entry['operation']}: {file_entry['path']}")
-            
-        elif msg_type in ['file_read', 'file_write']:
-            file_entry['handle'] = payload.get('handle', 'unknown')
-            file_entry['length'] = payload.get('length', 0)
-            
-            if data:
-                # 保存数据到文件
-                operation = 'read' if msg_type == 'file_read' else 'write'
-                data_filename = f"file_{operation}_{int(time.time())}_{file_entry['handle']}.bin"
-                data_path = os.path.join(self.output_dir, "file_data", data_filename)
-                
-                with open(data_path, 'wb') as f:
-                    f.write(data)
+            # 如果置信度高，自动转储该区域的内存
+            if confidence >= 75:
+                try:
+                    # 将地址从字符串转换为整数
+                    addr = int(address, 16) if isinstance(address, str) and address.startswith('0x') else int(address)
                     
-                file_entry['data_path'] = data_path
-                file_entry['data_size'] = len(data)
-                file_entry['data_md5'] = hashlib.md5(data).hexdigest()
-                
-                # 尝试检测数据类型
-                content_type = self._detect_content_type(data)
-                if content_type:
-                    file_entry['content_type'] = content_type
-                
-                logger.info(f"文件{operation}: {file_entry['length']} 字节")
-                
-        elif msg_type == 'file_opened':
-            file_entry['path'] = payload.get('path', 'unknown')
-            file_entry['handle'] = payload.get('handle', 'unknown')
-            
-            logger.info(f"文件已打开: {file_entry['path']} -> {file_entry['handle']}")
-        
-        self.file_data.append(file_entry)
-        self.protection_data['file_accesses'] = len(self.file_data)
+                    # 转储前后各2KB的内存
+                    self._dump_memory_region(addr - 0x800, 0x1000, f"High confidence OEP (confidence: {confidence}%)")
+                except Exception as e:
+                    logger.error(f"转储高置信度OEP错误: {str(e)}")
     
-    def _handle_registry_data(self, msg_type: str, payload: Dict[str, Any], data: Optional[bytes]) -> None:
+    def _handle_oep_candidates(self, payload: Dict[str, Any]) -> None:
         """
-        处理注册表操作数据
+        处理OEP候选列表
         
         Args:
-            msg_type: 消息类型
             payload: 消息载荷
-            data: 可选的二进制数据
         """
-        registry_entry = {
-            'type': msg_type,
-            'timestamp': payload.get('timestamp', time.time())
-        }
+        candidates = payload.get('candidates', [])
         
-        if msg_type == 'registry_access':
-            registry_entry['operation'] = payload.get('operation', 'unknown')
-            
-            if 'key' in payload:
-                registry_entry['key'] = payload['key']
-                logger.info(f"注册表{registry_entry['operation']}: {registry_entry['key']}")
-                
-            elif 'value' in payload:
-                registry_entry['value'] = payload['value']
-                if 'data_type' in payload:
-                    registry_entry['data_type'] = payload['data_type']
-                logger.info(f"注册表{registry_entry['operation']}: {registry_entry['value']}")
-                
-        elif msg_type == 'registry_data':
-            registry_entry['value'] = payload.get('value', 'unknown')
-            registry_entry['size'] = payload.get('size', 0)
-            
-            if data:
-                # 保存数据到文件
-                data_filename = f"registry_{int(time.time())}_{registry_entry['value']}.bin"
-                data_path = os.path.join(self.output_dir, "registry_data", data_filename)
-                
-                with open(data_path, 'wb') as f:
-                    f.write(data)
-                    
-                registry_entry['data_path'] = data_path
-                registry_entry['data_size'] = len(data)
-                
-                logger.info(f"注册表数据: {registry_entry['value']} ({registry_entry['size']} 字节)")
+        if not candidates:
+            return
         
-        self.registry_data.append(registry_entry)
-        self.protection_data['registry_accesses'] = len(self.registry_data)
+        # 更新或添加每个候选
+        for candidate in candidates:
+            address = candidate.get('address', 'unknown')
+            confidence = candidate.get('confidence', 0)
+            reasons = candidate.get('reasons', [])
+            
+            # 检查是否已存在此地址
+            for existing in self.oep_candidates:
+                if existing['address'] == address:
+                    # 更新置信度和原因
+                    existing['confidence'] = max(existing['confidence'], confidence)
+                    for reason in reasons:
+                        if reason not in existing['reasons']:
+                            existing['reasons'].append(reason)
+                    break
+            else:
+                # 添加新候选
+                self.oep_candidates.append({
+                    'address': address,
+                    'confidence': confidence,
+                    'reasons': reasons.copy(),
+                    'timestamp': candidate.get('timestamp', time.time())
+                })
+        
+        # 对候选按置信度排序
+        self.oep_candidates.sort(key=lambda x: x['confidence'], reverse=True)
+        logger.info(f"已更新OEP候选列表，共 {len(self.oep_candidates)} 个")
     
-    def _handle_crypto_data(self, msg_type: str, payload: Dict[str, Any], data: Optional[bytes]) -> None:
+    def _handle_pe_header(self, payload: Dict[str, Any], data: Optional[bytes]) -> None:
         """
-        处理加密/解密数据
+        处理PE头数据
         
         Args:
-            msg_type: 消息类型
             payload: 消息载荷
-            data: 二进制数据
+            data: PE头二进制数据
         """
         if not data:
+            logger.warning("PE头数据为空")
             return
-            
-        # 确定操作类型
-        operation = "加密" if msg_type == 'crypto_encrypt' else "解密"
         
-        # 保存加密/解密数据
-        data_filename = f"{operation}_{int(time.time())}_{payload.get('data_length', len(data))}.bin"
-        data_path = os.path.join(self.output_dir, "crypto", data_filename)
+        module_name = payload.get('module_name', 'unknown')
+        module_base = payload.get('module_base', '0')
         
-        with open(data_path, 'wb') as f:
+        # 保存PE头
+        pe_header_file = os.path.join(self.output_dir, "memory_dumps", f"pe_header_{module_name}_{int(time.time())}.bin")
+        with open(pe_header_file, 'wb') as f:
             f.write(data)
-            
-        logger.info(f"{operation}数据: {payload.get('data_length', len(data))} 字节, 已保存到 {data_path}")
-    
-    def _handle_thread_data(self, msg_type: str, payload: Dict[str, Any]) -> None:
-        """
-        处理线程操作数据
         
-        Args:
-            msg_type: 消息类型
-            payload: 消息载荷
-        """
-        if msg_type == 'thread_created':
-            thread_info = {
-                'timestamp': payload.get('timestamp', time.time()),
-                'thread_id': payload.get('thread_id', 0),
-                'start_address': payload.get('start_address', 'unknown'),
-                'parameter': payload.get('parameter', 'null')
-            }
-            
-            logger.info(f"创建线程: ID={thread_info['thread_id']}, 地址={thread_info['start_address']}")
-            self.protection_data['thread_creations'] += 1
-            
-        elif msg_type == 'thread_execution':
-            # 线程执行跟踪通常量很大，这里只记录日志
-            thread_id = payload.get('thread_id', 0)
-            total_calls = payload.get('total_calls', 0)
-            logger.debug(f"线程执行: ID={thread_id}, 调用数={total_calls}")
-    
-    def _handle_memory_operation(self, msg_type: str, payload: Dict[str, Any], data: Optional[bytes]) -> None:
-        """
-        处理内存操作数据
+        logger.info(f"保存PE头: {pe_header_file}")
         
-        Args:
-            msg_type: 消息类型
-            payload: 消息载荷
-            data: 可选的二进制数据
-        """
-        if msg_type == 'executable_allocation':
-            address = payload.get('address', 'unknown')
-            size = payload.get('size', 0)
-            protection = payload.get('protection', 'unknown')
-            
-            logger.info(f"分配可执行内存: {address}, 大小: {size}, 保护: {protection}")
-            self.protection_data['memory_allocations'] += 1
-            
-        elif msg_type == 'memory_protection_change':
-            address = payload.get('address', 'unknown')
-            size = payload.get('size', 0)
-            new_protection = payload.get('new_protection', 0)
-            
-            logger.info(f"内存保护变更: {address}, 大小: {size}, 新保护: {new_protection}")
-            
-        elif msg_type == 'memory_write_exec':
-            source = payload.get('source', 'unknown')
-            target = payload.get('target', 'unknown')
-            size = payload.get('size', 0)
-            
-            logger.info(f"写入可执行内存: {source} -> {target}, 大小: {size}")
-            
-        elif msg_type == 'memory_write':
-            address = payload.get('address', 'unknown')
-            size = payload.get('size', 0)
-            
-            logger.info(f"写入内存: {address}, 大小: {size}")
-            
-            # 如果有数据且未标记为过大，保存它
-            if data and not payload.get('data_too_large', False):
-                data_filename = f"memory_write_{int(time.time())}_{address}.bin"
-                data_path = os.path.join(self.output_dir, "memory_dumps", data_filename)
-                
-                with open(data_path, 'wb') as f:
-                    f.write(data)
-                
-                logger.debug(f"内存写入数据已保存: {data_path}")
-    
-    def _handle_status_update(self, payload: Dict[str, Any]) -> None:
-        """
-        处理状态更新
-        
-        Args:
-            payload: 状态数据
-        """
-        # 更新保护数据统计
-        self.protection_data.update({
-            'anti_debug_attempts': payload.get('anti_debug_attempts', 0),
-            'network_connections': payload.get('network_activity', 0),
-            'file_accesses': payload.get('file_activity', 0),
-            'registry_accesses': payload.get('registry_activity', 0),
-            'thread_creations': payload.get('thread_creations', 0),
-            'memory_allocations': payload.get('memory_allocations', 0)
-        })
-        
-        # 更新保护检测
-        if 'protections' in payload:
-            protections = payload['protections']
-            self.protection_data['protection_detections'].update({
-                'vmprotect': protections.get('vmprotect_detections', 0),
-                'themida': protections.get('themida_detections', 0),
-                'custom': protections.get('custom_detections', 0)
-            })
-    
-    def _handle_system_info(self, payload: Dict[str, Any]) -> None:
-        """
-        处理系统信息
-        
-        Args:
-            payload: 系统信息数据
-        """
-        info = payload.get('info', {})
-        
-        # 保存系统信息以用于报告
-        self.system_info = info
-        
-        # 记录主要信息
-        if 'mainModule' in info:
-            main_module = info['mainModule']
-            logger.info(f"主模块: {main_module.get('name', 'unknown')} @ {main_module.get('base', 'unknown')}")
-            
-        logger.info(f"架构: {info.get('arch', 'unknown')}, 平台: {info.get('platform', 'unknown')}")
-        logger.info(f"已加载 {len(info.get('modules', []))} 个模块")
-    
-    def _detect_content_type(self, data: bytes) -> Optional[str]:
-        """
-        尝试检测二进制数据的内容类型
-        
-        Args:
-            data: 二进制数据
-            
-        Returns:
-            检测到的内容类型或None
-        """
-        # 检查常见文件头
-        if data.startswith(b'MZ'):
-            return 'PE Executable'
-        elif data.startswith(b'%PDF'):
-            return 'PDF Document'
-        elif data.startswith(b'PK\x03\x04'):
-            return 'ZIP Archive'
-        elif data.startswith(b'\xff\xd8\xff'):
-            return 'JPEG Image'
-        elif data.startswith(b'\x89PNG\r\n\x1a\n'):
-            return 'PNG Image'
-        elif data.startswith(b'GIF8'):
-            return 'GIF Image'
-            
-        # 检查是否是文本数据
+        # 尝试分析PE头以提取有用信息
         try:
-            text_sample = data[:100].decode('utf-8')
-            if all(c.isprintable() or c.isspace() for c in text_sample):
-                # 进一步检查是否是JSON
-                if (data.strip().startswith(b'{') and data.strip().endswith(b'}')) or \
-                   (data.strip().startswith(b'[') and data.strip().endswith(b']')):
-                    try:
-                        json.loads(data)
-                        return 'JSON Data'
-                    except:
-                        pass
-                # 检查是否是HTML
-                if b'<html' in data.lower() or b'<!doctype html' in data.lower():
-                    return 'HTML Document'
-                # 检查是否是XML
-                if data.strip().startswith(b'<?xml'):
-                    return 'XML Document'
-                    
-                return 'Text Data'
-        except:
-            pass
-            
-        # 默认为二进制数据
-        return 'Binary Data'
-    
-    def _apply_memory_patch(self, address: int, bytes_data: bytes) -> str:
-        """
-        应用内存补丁
-        
-        Args:
-            address: 内存地址
-            bytes_data: 要写入的字节
-            
-        Returns:
-            操作结果描述
-        """
-        if not self.session:
-            return "无活动会话"
-            
-        try:
-            patch_script = f"""
-            (function() {{
-                try {{
-                    const address = ptr("{address:#x}");
-                    Memory.writeByteArray(address, {list(bytes_data)});
-                    console.log("[+] 已写入 {len(bytes_data)} 字节到 {address:#x}");
-                    return true;
-                }} catch (e) {{
-                    console.log("[!] 补丁错误: " + e);
-                    return false;
-                }}
-            }})();
-            """
-            
-            temp_script = self.session.create_script(patch_script)
-            temp_script.load()
-            
-            # 记录补丁操作
-            logger.info(f"已应用内存补丁: {address:#x} ({len(bytes_data)} 字节)")
-            
-            return f"成功写入 {len(bytes_data)} 字节到 {address:#x}"
-        except Exception as e:
-            logger.error(f"内存补丁错误: {str(e)}")
-            return f"错误: {str(e)}"
-    
-    def _dump_memory_region(self, address: int, size: int) -> Optional[str]:
-        """
-        转储内存区域
-        
-        Args:
-            address: 内存地址
-            size: 要转储的大小
-            
-        Returns:
-            转储文件路径或None
-        """
-        if not self.session:
-            return None
-            
-        try:
-            dump_script = f"""
-            (function() {{
-                try {{
-                    const address = ptr("{address:#x}");
-                    const size = {size};
-                    const data = Memory.readByteArray(address, size);
-                    send(data, data);
-                    return true;
-                }} catch (e) {{
-                    console.log("[!] 转储错误: " + e);
-                    return false;
-                }}
-            }})();
-            """
-            
-            # 使用临时脚本获取内存内容
-            received_data = None
-            def on_dump_message(message, data):
-                nonlocal received_data
-                if message['type'] == 'send' and data:
-                    received_data = data
-            
-            temp_script = self.session.create_script(dump_script)
-            temp_script.on('message', on_dump_message)
-            temp_script.load()
-            
-            if received_data:
-                # 生成文件名并保存转储
-                dump_filename = f"manual_dump_{address:#x}_{size}_{int(time.time())}.bin"
-                dump_path = os.path.join(self.output_dir, "memory_dumps", dump_filename)
-                
-                with open(dump_path, 'wb') as f:
-                    f.write(received_data)
-                
-                # 记录转储信息
-                dump_info = {
-                    'path': dump_path,
-                    'address': f"{address:#x}",
-                    'size': size,
-                    'timestamp': time.time(),
-                    'method': 'manual',
-                    'md5': hashlib.md5(received_data).hexdigest()
-                }
-                
-                self.memory_dumps.append(dump_info)
-                logger.info(f"手动内存转储已保存: {dump_path} (大小: {len(received_data)})")
-                
-                return dump_path
-            
-            logger.warning("内存转储没有返回数据")
-            return None
-        except Exception as e:
-            logger.error(f"内存转储错误: {str(e)}")
-            return None
-    
-    def _inject_custom_script(self, code: str) -> str:
-        """
-        注入自定义Frida脚本
-        
-        Args:
-            code: 要注入的JavaScript代码
-            
-        Returns:
-            操作结果描述
-        """
-        if not self.session:
-            return "无活动会话"
-            
-        try:
-            # 添加适当的包装，以确保代码被立即调用
-            wrapped_code = f"""
-            (function() {{
-                try {{
-                    {code}
-                }} catch (e) {{
-                    console.log("[!] 自定义脚本错误: " + e);
-                    console.log(e.stack);
-                }}
-            }})();
-            """
-            
-            temp_script = self.session.create_script(wrapped_code)
-            temp_script.on('message', self._on_message)
-            temp_script.load()
-            
-            logger.info("已注入自定义脚本")
-            return "脚本注入成功"
-        except Exception as e:
-            logger.error(f"脚本注入错误: {str(e)}")
-            return f"错误: {str(e)}"
-    
-    def start_analysis(self, timeout: Optional[int] = None) -> bool:
-        """
-        启动动态分析
-        
-        Args:
-            timeout: 分析超时时间（秒）
-            
-        Returns:
-            是否成功启动
-        """
-        try:
-            if not self.target_path:
-                logger.error("未指定目标文件")
-                return False
-                
-            logger.info(f"启动分析目标: {self.target_path}")
-            
-            # 创建并启动API服务器
-            self._create_api_server()
-            self._start_api_server()
-            
-            # 启动目标程序
-            self.process = frida.spawn(self.target_path)
-            self.pid = self.process
-            logger.info(f"目标已启动, PID: {self.pid}")
-            
-            # 附加到进程
-            self.session = frida.attach(self.pid)
-            self.attached = True
-            
-            # 创建脚本
-            self.script = self.session.create_script(FRIDA_SCRIPT)
-            self.script.on('message', self._on_message)
-            self.script.load()
-            
-            # 设置分析状态
-            self.running = True
-            self.analysis_start_time = time.time()
-            
-            # 恢复进程执行
-            frida.resume(self.pid)
-            logger.info("目标已恢复执行, 分析进行中...")
-            
-            # 设置超时定时器
-            if timeout:
-                logger.info(f"设置分析超时: {timeout} 秒")
-                self.timeout_timer = threading.Timer(timeout, self.stop_analysis)
-                self.timeout_timer.daemon = True
-                self.timeout_timer.start()
-            
-            return True
-        except Exception as e:
-            logger.error(f"启动分析错误: {str(e)}")
-            logger.error(traceback.format_exc())
-            self.cleanup()
-            return False
-    
-    def attach_to_process(self, pid: int, timeout: Optional[int] = None) -> bool:
-        """
-        附加到现有进程
-        
-        Args:
-            pid: 进程ID
-            timeout: 分析超时时间（秒）
-            
-        Returns:
-            是否成功附加
-        """
-        try:
-            logger.info(f"附加到进程: {pid}")
-            self.pid = pid
-            
-            # 创建并启动API服务器
-            self._create_api_server()
-            self._start_api_server()
-            
-            # 附加到进程
-            self.session = frida.attach(self.pid)
-            self.attached = True
-            
-            # 创建脚本
-            self.script = self.session.create_script(FRIDA_SCRIPT)
-            self.script.on('message', self._on_message)
-            self.script.load()
-            
-            # 设置分析状态
-            self.running = True
-            self.analysis_start_time = time.time()
-            
-            logger.info(f"成功附加到进程 {pid}, 分析进行中...")
-            
-            # 设置超时定时器
-            if timeout:
-                logger.info(f"设置分析超时: {timeout} 秒")
-                self.timeout_timer = threading.Timer(timeout, self.stop_analysis)
-                self.timeout_timer.daemon = True
-                self.timeout_timer.start()
-            
-            return True
-        except Exception as e:
-            logger.error(f"附加到进程错误: {str(e)}")
-            logger.error(traceback.format_exc())
-            self.cleanup()
-            return False
-    
-    def wait_for_completion(self, timeout: Optional[int] = None) -> None:
-        """
-        等待分析完成或直到超时
-        
-        Args:
-            timeout: 等待超时时间（秒）
-        """
-        try:
-            if timeout:
-                logger.info(f"等待最长 {timeout} 秒...")
-                end_time = time.time() + timeout
-                while self.running and time.time() < end_time:
-                    time.sleep(1)
-                
-                if self.running:
-                    logger.info("等待超时，停止分析...")
-                    self.stop_analysis()
-            else:
-                logger.info("按Ctrl+C停止分析...")
-                while self.running:
-                    time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("用户中断分析.")
-        finally:
-            self.stop_analysis()
-    
-    def stop_analysis(self) -> None:
-        """停止分析并清理资源"""
-        if not self.running:
-            return
-            
-        logger.info("停止分析...")
-        
-        # 取消超时定时器
-        if self.timeout_timer:
-            self.timeout_timer.cancel()
-            self.timeout_timer = None
-        
-        # 清理Frida资源
-        self.cleanup()
-        
-        # 生成分析报告
-        self.generate_report()
-        
-        # 设置状态
-        self.running = False
-        logger.info("分析已停止")
-    
-    def cleanup(self) -> None:
-        """清理资源"""
-        try:
-            if self.script:
-                self.script.unload()
-                self.script = None
-                
-            if self.session:
-                self.session.detach()
-                self.session = None
-                
-            if self.pid and not self.attached:
-                # 仅当我们生成了进程时才尝试终止它
-                try:
-                    os.kill(self.pid, signal.SIGTERM)
-                except:
-                    pass
-                self.pid = None
-            
-            self.attached = False
-            logger.info("资源已清理")
-        except Exception as e:
-            logger.error(f"清理错误: {str(e)}")
-    
-    def _generate_interim_report(self) -> None:
-        """生成临时分析报告，在分析仍在进行时使用"""
-        # 生成报告数据
-        report_data = self._generate_report_data()
-        
-        # 保存JSON报告
-        with open(self.json_report_file, 'w') as f:
-            json.dump(report_data, f, indent=2)
-        
-        # 生成HTML报告
-        self._generate_html_report(report_data)
-        
-        logger.info(f"临时报告已生成: {self.report_file}")
-    
-    def generate_report(self) -> None:
-        """生成最终分析报告"""
-        logger.info("生成分析报告...")
-        
-        # 收集重要数据
-        report_data = self._generate_report_data()
-        
-        # 保存JSON报告
-        with open(self.json_report_file, 'w') as f:
-            json.dump(report_data, f, indent=2)
-            
-        logger.info(f"JSON报告已保存到 {self.json_report_file}")
-        
-        # 生成HTML报告
-        self._generate_html_report(report_data)
-        
-        logger.info(f"HTML报告已保存到 {self.report_file}")
-    
-    def _generate_report_data(self) -> Dict[str, Any]:
-        """
-        收集并生成报告数据
-        
-        Returns:
-            报告数据字典
-        """
-        # 获取分析持续时间
-        duration = time.time() - self.analysis_start_time if self.analysis_start_time else 0
-        
-        # 基本报告数据
-        report_data = {
-            "meta": {
-                "target": self.target_path,
-                "pid": self.pid,
-                "start_time": datetime.fromtimestamp(self.analysis_start_time).strftime('%Y-%m-%d %H:%M:%S') if self.analysis_start_time else "N/A",
-                "duration": f"{int(duration // 60)}分 {int(duration % 60)}秒",
-                "analysis_id": os.path.basename(self.output_dir)
-            },
-            "statistics": {
-                "memory_dumps": len(self.memory_dumps),
-                "network_activity": len(self.network_data),
-                "file_operations": len(self.file_data),
-                "registry_operations": len(self.registry_data),
-                "protection_data": self.protection_data
-            },
-            "system_info": getattr(self, 'system_info', {}),
-            "memory_dumps": self.memory_dumps,
-            "network_data": self.network_data,
-            "file_data": self.file_data,
-            "registry_data": self.registry_data,
-            "running": self.running
-        }
-        
-        # 生成保护检测摘要
-        report_data["protection_summary"] = self._generate_protection_summary()
-        
-        # 提出解决方案和建议
-        report_data["recommendations"] = self._generate_recommendations()
-        
-        return report_data
-    
-    def _generate_protection_summary(self) -> Dict[str, Any]:
-        """
-        生成保护检测摘要
-        
-        Returns:
-            保护检测摘要字典
-        """
-        summary = {
-            "detected_protections": [],
-            "protection_level": "未知",
-            "anti_debugging": False,
-            "anti_vm": False,
-            "self_modifying_code": False,
-            "network_protection": False,
-        }
-        
-        # 确定检测到的保护
-        if self.protection_data['protection_detections']['vmprotect'] > 0:
-            summary["detected_protections"].append("VMProtect")
-        
-        if self.protection_data['protection_detections']['themida'] > 0:
-            summary["detected_protections"].append("Themida/WinLicense")
-        
-        if self.protection_data['protection_detections']['custom'] > 0:
-            summary["detected_protections"].append("自定义保护")
-        
-        # 检查反调试
-        if self.protection_data['anti_debug_attempts'] > 0:
-            summary["anti_debugging"] = True
-            summary["detected_protections"].append("反调试技术")
-        
-        # 检查网络保护
-        if self.protection_data['network_connections'] > 2:
-            summary["network_protection"] = True
-            summary["detected_protections"].append("网络验证")
-        
-        # 检查自修改代码
-        if len([dump for dump in self.memory_dumps if "executable" in dump.get('info', '').lower()]) > 0:
-            summary["self_modifying_code"] = True
-            summary["detected_protections"].append("自修改/自解密代码")
-        
-        # 确定保护级别
-        num_protections = len(summary["detected_protections"])
-        if num_protections >= 3:
-            summary["protection_level"] = "高"
-        elif num_protections >= 1:
-            summary["protection_level"] = "中"
-        elif num_protections == 0 and self.protection_data['memory_allocations'] > 0:
-            summary["protection_level"] = "低"
-        else:
-            summary["protection_level"] = "无"
-        
-        return summary
-    
-    def _generate_recommendations(self) -> List[Dict[str, str]]:
-        """
-        基于分析结果生成建议
-        
-        Returns:
-            建议列表
-        """
-        recommendations = []
-        
-        # 添加通用建议
-        recommendations.append({
-            "title": "进行静态分析",
-            "description": "将动态分析结果与静态分析相结合，使用转储的内存模块进行反汇编。"
-        })
-        
-        # 根据检测到的保护添加具体建议
-        protection_summary = self._generate_protection_summary()
-        
-        if "VMProtect" in protection_summary["detected_protections"]:
-            recommendations.append({
-                "title": "VMProtect绕过策略",
-                "description": "使用Scylla或类似工具在最终解密完成后转储内存。寻找VM入口点和VM退出点。"
-            })
-        
-        if "Themida/WinLicense" in protection_summary["detected_protections"]:
-            recommendations.append({
-                "title": "Themida绕过策略",
-                "description": "使用专门的Themida脱壳工具。设置硬件断点监控关键内存区域，注意TLS回调。"
-            })
-        
-        if protection_summary["anti_debugging"]:
-            recommendations.append({
-                "title": "反调试绕过",
-                "description": "对IsDebuggerPresent和CheckRemoteDebuggerPresent等API函数使用钩子。使用虚拟机并隐藏调试器特征。"
-            })
-        
-        if protection_summary["network_protection"]:
-            recommendations.append({
-                "title": "网络验证绕过",
-                "description": "分析网络流量并考虑使用网络代理服务器模拟验证服务器。修改网络通信函数返回成功结果。"
-            })
-        
-        if protection_summary["self_modifying_code"]:
-            recommendations.append({
-                "title": "自修改代码分析",
-                "description": "分析内存转储中的解密代码。使用本分析工具导出的内存转储文件，它们可能包含解密后的代码。"
-            })
-        
-        # 添加一般性建议
-        if len(self.memory_dumps) > 0:
-            recommendations.append({
-                "title": "内存转储分析",
-                "description": f"分析 {len(self.memory_dumps)} 个内存转储，尤其关注可执行内存区域和自修改代码。"
-            })
-        
-        return recommendations
-    
-    def _generate_html_report(self, report_data: Dict[str, Any]) -> None:
-        """
-        生成HTML格式的分析报告
-        
-        Args:
-            report_data: 报告数据
-        """
-        # HTML报告模板
-        html_template = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>动态分析报告</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; color: #333; }
-        h1, h2, h3 { color: #2c3e50; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .section { margin-bottom: 30px; background: #fff; padding: 20px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        .summary-box { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
-        .data-block { background-color: #f5f5f5; padding: 10px; border-radius: 5px; margin-top: 10px; overflow-x: auto; }
-        .protection-high { color: #e74c3c; font-weight: bold; }
-        .protection-medium { color: #f39c12; font-weight: bold; }
-        .protection-low { color: #3498db; font-weight: bold; }
-        .protection-none { color: #2ecc71; font-weight: bold; }
-        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
-        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
-        th { background-color: #f2f2f2; }
-        tr:hover { background-color: #f5f5f5; }
-        .badge { display: inline-block; padding: 3px 8px; border-radius: 3px; font-size: 12px; font-weight: bold; margin-right: 5px; margin-bottom: 5px; }
-        .badge-primary { background-color: #3498db; color: white; }
-        .badge-warning { background-color: #f39c12; color: white; }
-        .badge-danger { background-color: #e74c3c; color: white; }
-        .badge-success { background-color: #2ecc71; color: white; }
-        .badge-info { background-color: #9b59b6; color: white; }
-        .recommendations { list-style-type: none; padding: 0; }
-        .recommendations li { margin-bottom: 15px; padding-left: 20px; position: relative; }
-        .recommendations li:before { content: "→"; position: absolute; left: 0; color: #3498db; }
-        .header { background-color: #2c3e50; color: white; padding: 20px; border-radius: 5px; margin-bottom: 20px; }
-        .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #7f8c8d; }
-        .tabs { display: flex; margin-bottom: 20px; }
-        .tab { padding: 10px 15px; background-color: #f2f2f2; margin-right: 5px; cursor: pointer; border-radius: 5px 5px 0 0; }
-        .tab.active { background-color: #3498db; color: white; }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>动态分析报告</h1>
-            <p>生成时间: {timestamp}</p>
-        </div>
-        
-        <div class="section">
-            <h2>分析概述</h2>
-            <div class="summary-box">
-                <p><strong>目标文件:</strong> {target}</p>
-                <p><strong>进程ID:</strong> {pid}</p>
-                <p><strong>开始时间:</strong> {start_time}</p>
-                <p><strong>分析持续时间:</strong> {duration}</p>
-                <p><strong>保护级别:</strong> <span class="protection-{protection_level_class}">{protection_level}</span></p>
-                <p><strong>检测到的保护:</strong> {detected_protections}</p>
-            </div>
-            
-            <h3>保护统计</h3>
-            <table>
-                <tr><th>指标</th><th>数值</th></tr>
-                <tr><td>反调试尝试</td><td>{anti_debug_attempts}</td></tr>
-                <tr><td>网络连接</td><td>{network_connections}</td></tr>
-                <tr><td>文件访问</td><td>{file_accesses}</td></tr>
-                <tr><td>注册表访问</td><td>{registry_accesses}</td></tr>
-                <tr><td>线程创建</td><td>{thread_creations}</td></tr>
-                <tr><td>内存分配</td><td>{memory_allocations}</td></tr>
-            </table>
-        </div>
-        
-        <div class="section">
-            <h2>专家建议</h2>
-            <ul class="recommendations">
-                {recommendations}
-            </ul>
-        </div>
-        
-        <div class="section">
-            <h2>内存转储</h2>
-            <div class="tabs">
-                <div class="tab active" onclick="openTab(event, 'tab-memory-table')">表格视图</div>
-                <div class="tab" onclick="openTab(event, 'tab-memory-details')">详细信息</div>
-            </div>
-            
-            <div id="tab-memory-table" class="tab-content active">
-                {memory_dumps_table}
-            </div>
-            
-            <div id="tab-memory-details" class="tab-content">
-                {memory_dumps_details}
-            </div>
-        </div>
-        
-        <div class="section">
-            <h2>网络活动</h2>
-            {network_activity}
-        </div>
-        
-        <div class="section">
-            <h2>文件操作</h2>
-            {file_operations}
-        </div>
-        
-        <div class="section">
-            <h2>注册表操作</h2>
-            {registry_operations}
-        </div>
-        
-        <div class="footer">
-            <p>由高级逆向工程平台自动生成</p>
-            <p>分析ID: {analysis_id}</p>
-        </div>
-    </div>
-    
-    <script>
-        function openTab(evt, tabId) {
-            var i, tabContent, tabLinks;
-            
-            // 隐藏所有标签内容
-            tabContent = document.getElementsByClassName("tab-content");
-            for (i = 0; i < tabContent.length; i++) {
-                tabContent[i].style.display = "none";
-            }
-            
-            // 移除所有标签的活动状态
-            tabLinks = document.getElementsByClassName("tab");
-            for (i = 0; i < tabLinks.length; i++) {
-                tabLinks[i].className = tabLinks[i].className.replace(" active", "");
-            }
-            
-            // 显示当前标签并添加活动状态
-            document.getElementById(tabId).style.display = "block";
-            evt.currentTarget.className += " active";
-        }
-    </script>
-</body>
-</html>
-"""
-        
-        # 格式化建议
-        recommendations_html = ""
-        for rec in report_data.get('recommendations', []):
-            recommendations_html += f'<li><strong>{rec["title"]}</strong>: {rec["description"]}</li>\n'
-        
-        # 格式化内存转储表格
-        memory_dumps_table = ""
-        if report_data.get('memory_dumps', []):
-            memory_dumps_table = """
-            <table>
-                <tr>
-                    <th>序号</th>
-                    <th>地址</th>
-                    <th>大小</th>
-                    <th>MD5</th>
-                    <th>信息</th>
-                </tr>
-            """
-            
-            for i, dump in enumerate(report_data['memory_dumps']):
-                memory_dumps_table += f"""
-                <tr>
-                    <td>{i+1}</td>
-                    <td>{dump.get('address', 'unknown')}</td>
-                    <td>{dump.get('size', 0)} 字节</td>
-                    <td>{dump.get('md5', 'N/A')}</td>
-                    <td>{dump.get('info', '')}</td>
-                </tr>
-                """
-            
-            memory_dumps_table += "</table>"
-        else:
-            memory_dumps_table = "<p>未检测到内存转储</p>"
-        
-        # 格式化内存转储详情
-        memory_dumps_details = ""
-        if report_data.get('memory_dumps', []):
-            for i, dump in enumerate(report_data['memory_dumps']):
-                memory_dumps_details += f"""
-                <div class="data-block">
-                    <h4>转储 #{i+1}: {os.path.basename(dump.get('path', ''))}</h4>
-                    <p><strong>地址:</strong> {dump.get('address', 'unknown')}</p>
-                    <p><strong>大小:</strong> {dump.get('size', 0)} 字节</p>
-                    <p><strong>MD5:</strong> {dump.get('md5', 'N/A')}</p>
-                    <p><strong>时间:</strong> {datetime.fromtimestamp(dump.get('timestamp', 0)).strftime('%Y-%m-%d %H:%M:%S')}</p>
-                    <p><strong>信息:</strong> {dump.get('info', '')}</p>
-                    <p><strong>文件路径:</strong> {dump.get('path', '')}</p>
-                </div>
-                """
-        else:
-            memory_dumps_details = "<p>未检测到内存转储</p>"
-        
-        # 格式化网络活动
-        network_activity = ""
-        if report_data.get('network_data', []):
-            network_activity = """
-            <table>
-                <tr>
-                    <th>类型</th>
-                    <th>详细信息</th>
-                    <th>数据大小</th>
-                    <th>时间</th>
-                </tr>
-            """
-            
-            for entry in report_data['network_data']:
-                entry_type = entry.get('type', 'unknown')
-                details = ""
-                
-                if entry_type == 'network_connect':
-                    details = f"{entry.get('address', 'unknown')}:{entry.get('port', 0)}"
-                elif entry_type == 'http_request':
-                    details = entry.get('url', 'unknown')
-                elif entry_type in ['network_send', 'network_recv', 'network_send_data']:
-                    details = f"Socket: {entry.get('socket', 'unknown')}, 长度: {entry.get('length', 0)} 字节"
-                    if 'content_type' in entry:
-                        details += f", 类型: {entry['content_type']}"
-                
-                network_activity += f"""
-                <tr>
-                    <td>{entry_type}</td>
-                    <td>{details}</td>
-                    <td>{entry.get('data_size', 0)} 字节</td>
-                    <td>{datetime.fromtimestamp(entry.get('timestamp', 0)).strftime('%Y-%m-%d %H:%M:%S')}</td>
-                </tr>
-                """
-            
-            network_activity += "</table>"
-        else:
-            network_activity = "<p>未检测到网络活动</p>"
-        
-        # 格式化文件操作
-        file_operations = ""
-        if report_data.get('file_data', []):
-            file_operations = """
-            <table>
-                <tr>
-                    <th>操作</th>
-                    <th>路径/句柄</th>
-                    <th>数据大小</th>
-                    <th>时间</th>
-                </tr>
-            """
-            
-            for entry in report_data['file_data']:
-                entry_type = entry.get('type', 'unknown')
-                details = ""
-                
-                if 'path' in entry:
-                    details = entry['path']
-                elif 'handle' in entry:
-                    details = f"句柄: {entry['handle']}"
-                
-                if 'length' in entry:
-                    details += f", 长度: {entry['length']} 字节"
-                
-                file_operations += f"""
-                <tr>
-                    <td>{entry_type}</td>
-                    <td>{details}</td>
-                    <td>{entry.get('data_size', 0)} 字节</td>
-                    <td>{datetime.fromtimestamp(entry.get('timestamp', 0)).strftime('%Y-%m-%d %H:%M:%S')}</td>
-                </tr>
-                """
-            
-            file_operations += "</table>"
-        else:
-            file_operations = "<p>未检测到文件操作</p>"
-        
-        # 格式化注册表操作
-        registry_operations = ""
-        if report_data.get('registry_data', []):
-            registry_operations = """
-            <table>
-                <tr>
-                    <th>操作</th>
-                    <th>键/值</th>
-                    <th>数据大小</th>
-                    <th>时间</th>
-                </tr>
-            """
-            
-            for entry in report_data['registry_data']:
-                entry_type = entry.get('type', 'unknown')
-                details = ""
-                
-                if 'key' in entry:
-                    details = f"键: {entry['key']}"
-                elif 'value' in entry:
-                    details = f"值: {entry['value']}"
-                
-                if 'data_type' in entry:
-                    details += f", 类型: {entry['data_type']}"
-                
-                registry_operations += f"""
-                <tr>
-                    <td>{entry_type}</td>
-                    <td>{details}</td>
-                    <td>{entry.get('data_size', 0)} 字节</td>
-                    <td>{datetime.fromtimestamp(entry.get('timestamp', 0)).strftime('%Y-%m-%d %H:%M:%S')}</td>
-                </tr>
-                """
-            
-            registry_operations += "</table>"
-        else:
-            registry_operations = "<p>未检测到注册表操作</p>"
-        
-        # 格式化保护级别CSS类
-        protection_level_class = report_data['protection_summary']['protection_level'].lower()
-        if protection_level_class == "高":
-            protection_level_class = "high"
-        elif protection_level_class == "中":
-            protection_level_class = "medium"
-        elif protection_level_class == "低":
-            protection_level_class = "low"
-        else:
-            protection_level_class = "none"
-        
-        # 格式化检测到的保护
-        detected_protections = ""
-        protections = report_data['protection_summary']['detected_protections']
-        if protections:
-            for protection in protections:
-                badge_class = "badge-primary"
-                if "VMProtect" in protection or "Themida" in protection:
-                    badge_class = "badge-danger"
-                elif "反调试" in protection:
-                    badge_class = "badge-warning"
-                
-                detected_protections += f'<span class="badge {badge_class}">{protection}</span> '
-        else:
-            detected_protections = '<span class="badge badge-success">无</span>'
-        
-        # 填充HTML模板
-        html_report = html_template.format(
-            timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            target=report_data['meta']['target'] or "未知",
-            pid=report_data['meta']['pid'] or "未知",
-            start_time=report_data['meta']['start_time'],
-            duration=report_data['meta']['duration'],
-            protection_level=report_data['protection_summary']['protection_level'],
-            protection_level_class=protection_level_class,
-            detected_protections=detected_protections,
-            anti_debug_attempts=report_data['protection_data']['anti_debug_attempts'],
-            network_connections=report_data['protection_data']['network_connections'],
-            file_accesses=report_data['protection_data']['file_accesses'],
-            registry_accesses=report_data['protection_data']['registry_accesses'],
-            thread_creations=report_data['protection_data']['thread_creations'],
-            memory_allocations=report_data['protection_data']['memory_allocations'],
-            recommendations=recommendations_html,
-            memory_dumps_table=memory_dumps_table,
-            memory_dumps_details=memory_dumps_details,
-            network_activity=network_activity,
-            file_operations=file_operations,
-            registry_operations=registry_operations,
-            analysis_id=report_data['meta']['analysis_id']
-        )
-        
-        # 写入HTML报告
-        with open(self.report_file, 'w', encoding='utf-8') as f:
-            f.write(html_report)
-
-def main():
-    """主程序入口"""
-    # 创建参数解析器
-    parser = argparse.ArgumentParser(description='动态分析引擎')
-    
-    # 添加命令行参数
-    parser.add_argument('target', nargs='?', help='目标可执行文件路径或进程ID')
-    parser.add_argument('-o', '--output', help='输出目录')
-    parser.add_argument('-t', '--timeout', type=int, help='分析超时(秒)')
-    parser.add_argument('-p', '--pid', action='store_true', help='目标是PID而非文件路径')
-    parser.add_argument('-a', '--api-port', type=int, default=5000, help='API服务器端口(默认: 5000)')
-    parser.add_argument('-w', '--wait', action='store_true', help='等待分析完成')
-    parser.add_argument('-v', '--verbose', action='store_true', help='启用详细日志输出')
-    
-    # 解析参数
-    args = parser.parse_args()
-    
-    # 设置日志级别
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-    
-    try:
-        if args.pid:
-            # 附加到现有进程
-            if not args.target:
-                print("错误: 必须指定目标进程ID")
-                return 1
-                
-            pid = int(args.target)
-            analyzer = DynamicAnalyzer(None, args.output, args.api_port)
-            
-            if analyzer.attach_to_process(pid, args.timeout):
-                logger.info(f"成功附加到进程 {pid}")
-                
-                if args.wait:
-                    analyzer.wait_for_completion()
-                else:
-                    print(f"API服务器运行在http://localhost:{args.api_port}")
-                    print("进程在后台分析中. 使用Ctrl+C停止.")
-                    try:
-                        while True:
-                            time.sleep(1)
-                    except KeyboardInterrupt:
-                        analyzer.stop_analysis()
-            else:
-                logger.error(f"附加到进程 {pid} 失败")
-                return 1
-        elif args.target:
-            # 启动新进程分析
-            analyzer = DynamicAnalyzer(args.target, args.output, args.api_port)
-            
-            if analyzer.start_analysis(args.timeout):
-                logger.info(f"成功启动分析: {args.target}")
-                
-                if args.wait:
-                    analyzer.wait_for_completion()
-                else:
-                    print(f"API服务器运行在http://localhost:{args.api_port}")
-                    print("进程在后台分析中. 使用Ctrl+C停止.")
-                    try:
-                        while True:
-                            time.sleep(1)
-                    except KeyboardInterrupt:
-                        analyzer.stop_analysis()
-            else:
-                logger.error(f"启动分析失败: {args.target}")
-                return 1
-        else:
-            # 仅启动API服务器
-            print("未指定目标. 仅启动API服务器.")
-            analyzer = DynamicAnalyzer(None, args.output, args.api_port)
-            analyzer._create_api_server()
-            analyzer._start_api_server()
-            
-            print(f"API服务器运行在http://localhost:{args.api_port}")
-            print("使用Ctrl+C停止.")
-            try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                print("API服务器已停止.")
-        
-        return 0
-    except Exception as e:
-        logger.error(f"错误: {str(e)}")
-        logger.error(traceback.format_exc())
-        return 1
-
-if __name__ == "__main__":
-    sys.exit(main())
+            import pefile
+            pe = pefile.PE

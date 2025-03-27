@@ -3,7 +3,7 @@
 逆向工程平台Web界面
 提供文件上传、任务管理和分析报告查看功能
 """
-from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, send_file, abort, session
+from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, send_file, abort, session # type: ignore
 import os
 import sys
 import json
@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import shutil
 import hashlib
-from werkzeug.utils import secure_filename
+from werkzeug.utils import secure_filename # type: ignore
 from datetime import datetime, timedelta
 from functools import wraps
 from typing import Dict, List, Any, Optional, Tuple, Union
@@ -321,7 +321,7 @@ def perform_initial_analysis(filepath):
             
             # 进一步分析PE文件
             try:
-                import pefile
+                import pefile # type: ignore
                 pe = pefile.PE(filepath)
                 
                 # 获取架构信息

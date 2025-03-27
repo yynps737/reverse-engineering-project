@@ -15,7 +15,7 @@ check_environment.sh deobfuscator start_reverse_suite.
 
 ```bash
 # 克隆仓库
-git clone https://github.com/您的用户名/reverse-engineering-platform.git
+git clone https://github.com/yynps737/reverse-engineering-platform.git
 
 # 安装依赖
 cd reverse-engineering-platform
