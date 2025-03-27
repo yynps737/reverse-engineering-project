@@ -58,9 +58,9 @@ ALLOWED_EXTENSIONS = {'exe', 'dll', 'sys', 'bin', 'so', 'dylib', 'elf', 'pyc', '
 
 # 工具路径
 TOOLS = {
-    'shell_detector': os.path.join(os.path.dirname(os.path.dirname(app.root_path)), 'shell_detector.py'),
-    'dynamic_analyzer': os.path.join(os.path.dirname(os.path.dirname(app.root_path)), 'dynamic_analyzer.py'),
-    'universal_unpacker': os.path.join(os.path.dirname(os.path.dirname(app.root_path)), 'unpacker', 'universal_unpacker.py')
+    'shell_detector': os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'shell_detector.py')),
+    'dynamic_analyzer': os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'dynamic_analyzer.py')),
+    'universal_unpacker': os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'unpacker', 'universal_unpacker.py'))
 }
 
 # 安全检查装饰器
@@ -418,6 +418,21 @@ def run_analysis(task_id, analysis_type):
     logger.info(f"开始{analysis_type}分析，任务ID: {task_id}, 文件: {task['filename']}")
     
     try:
+        # 记录工具路径情况
+        logger.info(f"执行工具路径检查: {TOOLS}")
+        for tool_name, tool_path in TOOLS.items():
+            if not os.path.exists(tool_path):
+                logger.error(f"工具不存在: {tool_name} -> {tool_path}")
+            else:
+                logger.info(f"工具存在: {tool_name} -> {tool_path}")
+        
+        # 检查目录权限
+        result_dir = task['result_dir']
+        if not os.access(result_dir, os.W_OK):
+            logger.error(f"没有结果目录的写入权限: {result_dir}")
+        else:
+            logger.info(f"结果目录检查通过: {result_dir}")
+        
         # 根据分析类型执行相应的工具
         if analysis_type == 'static':
             result = run_static_analysis(task)
@@ -436,8 +451,10 @@ def run_analysis(task_id, analysis_type):
         task['analysis_results'][analysis_type] = result
         logger.info(f"{analysis_type}分析完成，任务ID: {task_id}")
     except Exception as e:
-        # 分析失败
+        # 记录完整的错误信息
         logger.error(f"{analysis_type}分析错误，任务ID: {task_id}，错误: {str(e)}")
+        logger.error(traceback.format_exc())
+        
         task['status'] = f'{analysis_type}_failed'
         if 'analysis_results' not in task:
             task['analysis_results'] = {}
