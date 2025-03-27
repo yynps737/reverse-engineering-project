@@ -1974,6 +1974,518 @@ class DynamicAnalyzer:
             logger.error(f"反汇编错误: {str(e)}")
             return None
     
+    def _handle_network_data(self, msg_type: str, payload: Dict[str, Any], data: Optional[bytes]) -> None:
+        """
+        处理网络数据
+        
+        Args:
+            msg_type: 消息类型
+            payload: 消息载荷
+            data: 可选的二进制数据
+        """
+        timestamp = payload.get('timestamp', time.time())
+        
+        if msg_type == 'network_connect':
+            address = payload.get('address', 'unknown')
+            port = payload.get('port', 0)
+            
+            network_info = {
+                'type': 'connect',
+                'address': address,
+                'port': port,
+                'timestamp': timestamp
+            }
+            
+            self.network_data.append(network_info)
+            self.protection_data['network_connections'] += 1
+            
+            logger.info(f"网络连接: {address}:{port}")
+            
+            # 保存到文件
+            filename = f"network_connect_{address}_{port}_{int(timestamp)}.json"
+            file_path = os.path.join(self.output_dir, "network_data", filename)
+            
+            with open(file_path, 'w') as f:
+                json.dump(network_info, f, indent=2)
+        
+        elif msg_type == 'http_request':
+            url = payload.get('url', 'unknown')
+            
+            http_info = {
+                'type': 'http',
+                'url': url,
+                'timestamp': timestamp
+            }
+            
+            self.network_data.append(http_info)
+            
+            logger.info(f"HTTP请求: {url}")
+            
+            # 保存到文件
+            url_safe = url.replace('://', '_').replace('/', '_').replace('?', '_')[:50]
+            filename = f"http_request_{int(timestamp)}_{url_safe}.json"
+            file_path = os.path.join(self.output_dir, "network_data", filename)
+            
+            with open(file_path, 'w') as f:
+                json.dump(http_info, f, indent=2)
+        
+        elif msg_type in ['network_send', 'network_recv']:
+            socket = payload.get('socket', 'unknown')
+            length = payload.get('length', 0)
+            
+            data_info = {
+                'type': msg_type.replace('network_', ''),
+                'socket': socket,
+                'length': length,
+                'timestamp': timestamp
+            }
+            
+            self.network_data.append(data_info)
+            
+            logger.info(f"网络数据 {msg_type}: Socket {socket}, 长度 {length}")
+            
+            # 如果有数据，保存到文件
+            if data:
+                filename = f"{msg_type}_{socket}_{int(timestamp)}.bin"
+                file_path = os.path.join(self.output_dir, "network_data", filename)
+                
+                with open(file_path, 'wb') as f:
+                    f.write(data)
+                
+                data_info['data_file'] = file_path
+        
+        elif msg_type == 'network_send_data':
+            # 处理发送数据的内容
+            length = payload.get('length', 0)
+            
+            if data:
+                filename = f"network_send_data_{int(timestamp)}.bin"
+                file_path = os.path.join(self.output_dir, "network_data", filename)
+                
+                with open(file_path, 'wb') as f:
+                    f.write(data)
+                
+                logger.info(f"保存网络发送数据: {file_path} (长度: {length})")
+    
+    def _handle_protection_detection(self, msg_type: str, payload: Dict[str, Any]) -> None:
+        """
+        处理保护检测消息
+        
+        Args:
+            msg_type: 消息类型
+            payload: 消息载荷
+        """
+        if msg_type == 'protection_detected':
+            protection_type = payload.get('protection_type', 'unknown')
+            info = payload.get('info', {})
+            
+            logger.info(f"检测到保护: {protection_type} - {info.get('name', 'Unknown')}")
+            
+            # 更新保护计数
+            if protection_type in self.protection_data['protection_detections']:
+                self.protection_data['protection_detections'][protection_type] += 1
+            
+            # 记录详细信息到文件
+            timestamp = payload.get('timestamp', time.time())
+            filename = f"protection_{protection_type}_{int(timestamp)}.json"
+            file_path = os.path.join(self.output_dir, "memory_dumps", filename)
+            
+            with open(file_path, 'w') as f:
+                json.dump({
+                    'type': msg_type,
+                    'protection_type': protection_type,
+                    'info': info,
+                    'timestamp': timestamp
+                }, f, indent=2)
+                
+        elif msg_type == 'anti_debug_attempt':
+            function_name = payload.get('function', 'unknown')
+            timestamp = payload.get('timestamp', time.time())
+            
+            logger.info(f"检测到反调试尝试: {function_name}")
+            
+            # 更新反调试计数
+            self.protection_data['anti_debug_attempts'] += 1
+            
+            # 记录到文件
+            filename = f"anti_debug_{function_name}_{int(timestamp)}.json"
+            file_path = os.path.join(self.output_dir, "memory_dumps", filename)
+            
+            with open(file_path, 'w') as f:
+                json.dump({
+                    'type': msg_type,
+                    'function': function_name,
+                    'timestamp': timestamp
+                }, f, indent=2)
+    
+    def _handle_file_data(self, msg_type: str, payload: Dict[str, Any], data: Optional[bytes]) -> None:
+        """
+        处理文件操作数据
+        
+        Args:
+            msg_type: 消息类型
+            payload: 消息载荷
+            data: 可选的二进制数据
+        """
+        timestamp = payload.get('timestamp', time.time())
+        
+        if msg_type == 'file_access':
+            operation = payload.get('operation', 'unknown')
+            path = payload.get('path', 'unknown')
+            access = payload.get('access', 0)
+            
+            file_info = {
+                'type': 'access',
+                'operation': operation,
+                'path': path,
+                'access': access,
+                'timestamp': timestamp
+            }
+            
+            self.file_data.append(file_info)
+            self.protection_data['file_accesses'] += 1
+            
+            logger.info(f"文件操作: {operation} - {path}")
+            
+            # 保存到文件
+            safe_path = path.replace('\\', '_').replace('/', '_').replace(':', '_')[:50]
+            filename = f"file_{operation}_{int(timestamp)}_{safe_path}.json"
+            file_path = os.path.join(self.output_dir, "file_data", filename)
+            
+            with open(file_path, 'w') as f:
+                json.dump(file_info, f, indent=2)
+                
+        elif msg_type in ['file_read', 'file_write']:
+            handle = payload.get('handle', 'unknown')
+            length = payload.get('length', 0)
+            
+            file_info = {
+                'type': msg_type.replace('file_', ''),
+                'handle': handle,
+                'length': length,
+                'timestamp': timestamp
+            }
+            
+            self.file_data.append(file_info)
+            
+            logger.info(f"文件 {msg_type}: 句柄 {handle}, 长度 {length}")
+            
+            # 如果有数据，保存到文件
+            if data:
+                filename = f"{msg_type}_{handle}_{int(timestamp)}.bin"
+                file_path = os.path.join(self.output_dir, "file_data", filename)
+                
+                with open(file_path, 'wb') as f:
+                    f.write(data)
+                
+                file_info['data_file'] = file_path
+    
+    def _handle_registry_data(self, msg_type: str, payload: Dict[str, Any], data: Optional[bytes]) -> None:
+        """
+        处理注册表操作数据
+        
+        Args:
+            msg_type: 消息类型
+            payload: 消息载荷
+            data: 可选的二进制数据
+        """
+        timestamp = payload.get('timestamp', time.time())
+        
+        if msg_type == 'registry_access':
+            operation = payload.get('operation', 'unknown')
+            key = payload.get('key', 'unknown')
+            
+            registry_info = {
+                'type': 'access',
+                'operation': operation,
+                'key': key,
+                'timestamp': timestamp
+            }
+            
+            self.registry_data.append(registry_info)
+            self.protection_data['registry_accesses'] += 1
+            
+            logger.info(f"注册表操作: {operation} - {key}")
+            
+            # 保存到文件
+            safe_key = key.replace('\\', '_').replace('/', '_')[:50]
+            filename = f"registry_{operation}_{int(timestamp)}_{safe_key}.json"
+            file_path = os.path.join(self.output_dir, "registry_data", filename)
+            
+            with open(file_path, 'w') as f:
+                json.dump(registry_info, f, indent=2)
+                
+        elif msg_type == 'registry_data':
+            value = payload.get('value', 'unknown')
+            size = payload.get('size', 0)
+            
+            registry_info = {
+                'type': 'data',
+                'value': value,
+                'size': size,
+                'timestamp': timestamp
+            }
+            
+            self.registry_data.append(registry_info)
+            
+            logger.info(f"注册表数据: {value}, 大小 {size}")
+            
+            # 如果有数据，保存到文件
+            if data:
+                safe_value = value.replace('\\', '_').replace('/', '_')[:50]
+                filename = f"registry_data_{int(timestamp)}_{safe_value}.bin"
+                file_path = os.path.join(self.output_dir, "registry_data", filename)
+                
+                with open(file_path, 'wb') as f:
+                    f.write(data)
+                
+                registry_info['data_file'] = file_path
+    
+    def _handle_crypto_data(self, msg_type: str, payload: Dict[str, Any], data: Optional[bytes]) -> None:
+        """
+        处理加密/解密数据
+        
+        Args:
+            msg_type: 消息类型
+            payload: 消息载荷
+            data: 可选的二进制数据
+        """
+        if not data:
+            return
+            
+        timestamp = payload.get('timestamp', time.time())
+        key_handle = payload.get('key_handle', 'unknown')
+        data_length = payload.get('data_length', len(data) if data else 0)
+        is_final = payload.get('final', 0) != 0
+        
+        # 生成文件名
+        crypto_type = 'decrypt' if msg_type == 'crypto_decrypt' else 'encrypt'
+        filename = f"crypto_{crypto_type}_{int(timestamp)}.bin"
+        file_path = os.path.join(self.output_dir, "crypto", filename)
+        
+        # 保存数据
+        with open(file_path, 'wb') as f:
+            f.write(data)
+        
+        # 记录信息
+        crypto_info = {
+            'type': crypto_type,
+            'key_handle': key_handle,
+            'data_length': data_length,
+            'is_final': is_final,
+            'data_file': file_path,
+            'timestamp': timestamp
+        }
+        
+        logger.info(f"加密操作: {crypto_type}, 长度: {data_length}, 文件: {file_path}")
+        
+        # 保存元数据
+        meta_file = os.path.join(self.output_dir, "crypto", f"crypto_{crypto_type}_{int(timestamp)}.json")
+        with open(meta_file, 'w') as f:
+            json.dump(crypto_info, f, indent=2)
+    
+    def _handle_thread_data(self, msg_type: str, payload: Dict[str, Any]) -> None:
+        """
+        处理线程相关数据
+        
+        Args:
+            msg_type: 消息类型
+            payload: 消息载荷
+        """
+        timestamp = payload.get('timestamp', time.time())
+        
+        if msg_type == 'thread_created':
+            thread_id = payload.get('thread_id', 0)
+            start_address = payload.get('start_address', 'unknown')
+            parameter = payload.get('parameter', 'null')
+            
+            thread_info = {
+                'type': 'thread_created',
+                'thread_id': thread_id,
+                'start_address': start_address,
+                'parameter': parameter,
+                'timestamp': timestamp
+            }
+            
+            self.protection_data['thread_creations'] += 1
+            
+            logger.info(f"线程创建: ID {thread_id}, 起始地址 {start_address}")
+            
+            # 保存到文件
+            filename = f"thread_created_{thread_id}_{int(timestamp)}.json"
+            file_path = os.path.join(self.output_dir, "memory_dumps", filename)
+            
+            with open(file_path, 'w') as f:
+                json.dump(thread_info, f, indent=2)
+                
+        elif msg_type == 'thread_execution':
+            thread_id = payload.get('thread_id', 0)
+            calls = payload.get('calls', [])
+            total_calls = payload.get('total_calls', 0)
+            
+            thread_info = {
+                'type': 'thread_execution',
+                'thread_id': thread_id,
+                'calls': calls,
+                'total_calls': total_calls,
+                'timestamp': timestamp
+            }
+            
+            logger.info(f"线程执行: ID {thread_id}, 调用数 {total_calls}")
+            
+            # 保存到文件
+            filename = f"thread_execution_{thread_id}_{int(timestamp)}.json"
+            file_path = os.path.join(self.output_dir, "memory_dumps", filename)
+            
+            with open(file_path, 'w') as f:
+                json.dump(thread_info, f, indent=2)
+    
+    def _handle_memory_operation(self, msg_type: str, payload: Dict[str, Any], data: Optional[bytes]) -> None:
+        """
+        处理内存操作数据
+        
+        Args:
+            msg_type: 消息类型
+            payload: 消息载荷
+            data: 可选的二进制数据
+        """
+        timestamp = payload.get('timestamp', time.time())
+        address = payload.get('address', 'unknown')
+        size = payload.get('size', 0)
+        
+        if msg_type == 'executable_allocation':
+            protection = payload.get('protection', 'unknown')
+            
+            alloc_info = {
+                'type': 'executable_allocation',
+                'address': address,
+                'size': size,
+                'protection': protection,
+                'timestamp': timestamp
+            }
+            
+            self.protection_data['memory_allocations'] += 1
+            
+            logger.info(f"可执行内存分配: 地址 {address}, 大小 {size}, 保护 {protection}")
+            
+            # 保存到文件
+            filename = f"memory_alloc_{address}_{int(timestamp)}.json"
+            file_path = os.path.join(self.output_dir, "memory_dumps", filename)
+            
+            with open(file_path, 'w') as f:
+                json.dump(alloc_info, f, indent=2)
+                
+        elif msg_type == 'memory_protection_change':
+            new_protection = payload.get('new_protection', 0)
+            
+            prot_info = {
+                'type': 'memory_protection_change',
+                'address': address,
+                'size': size,
+                'new_protection': new_protection,
+                'timestamp': timestamp
+            }
+            
+            logger.info(f"内存保护变更: 地址 {address}, 大小 {size}, 新保护 {new_protection}")
+            
+            # 保存到文件
+            filename = f"memory_prot_{address}_{int(timestamp)}.json"
+            file_path = os.path.join(self.output_dir, "memory_dumps", filename)
+            
+            with open(file_path, 'w') as f:
+                json.dump(prot_info, f, indent=2)
+                
+        elif msg_type in ['memory_write', 'memory_write_exec']:
+            if msg_type == 'memory_write_exec':
+                source = payload.get('source', 'unknown')
+                target = payload.get('target', 'unknown')
+                
+                write_info = {
+                    'type': 'memory_write_exec',
+                    'source': source,
+                    'target': target,
+                    'size': size,
+                    'timestamp': timestamp
+                }
+                
+                logger.info(f"写入可执行内存: 来源 {source} -> 目标 {target}, 大小 {size}")
+            else:
+                write_info = {
+                    'type': 'memory_write',
+                    'address': address,
+                    'size': size,
+                    'timestamp': timestamp
+                }
+                
+                logger.info(f"内存写入: 地址 {address}, 大小 {size}")
+            
+            # 如果有数据，保存到文件
+            if data:
+                filename = f"{msg_type}_{address}_{int(timestamp)}.bin"
+                file_path = os.path.join(self.output_dir, "memory_dumps", filename)
+                
+                with open(file_path, 'wb') as f:
+                    f.write(data)
+                
+                write_info['data_file'] = file_path
+                
+                # 保存元数据
+                meta_file = os.path.join(self.output_dir, "memory_dumps", f"{msg_type}_{address}_{int(timestamp)}.json")
+                with open(meta_file, 'w') as f:
+                    json.dump(write_info, f, indent=2)
+    
+    def _handle_status_update(self, payload: Dict[str, Any]) -> None:
+        """
+        处理状态更新
+        
+        Args:
+            payload: 消息载荷
+        """
+        # 更新保护统计数据
+        self.protection_data['anti_debug_attempts'] = payload.get('anti_debug_attempts', 0)
+        self.protection_data['network_connections'] = payload.get('network_activity', 0)
+        self.protection_data['file_accesses'] = payload.get('file_activity', 0)
+        self.protection_data['registry_accesses'] = payload.get('registry_activity', 0)
+        self.protection_data['thread_creations'] = payload.get('thread_creations', 0)
+        self.protection_data['memory_allocations'] = payload.get('memory_allocations', 0)
+        
+        # 更新保护检测
+        protections = payload.get('protections', {})
+        for prot_type, count in protections.items():
+            if prot_type in self.protection_data['protection_detections']:
+                self.protection_data['protection_detections'][prot_type] = count
+        
+        # 更新时间
+        self.last_status_update = time.time()
+        
+        # 记录状态
+        logger.debug(f"收到状态更新: API调用 {payload.get('total_api_calls', 0)}, 反调试尝试 {self.protection_data['anti_debug_attempts']}")
+    
+    def _handle_system_info(self, payload: Dict[str, Any]) -> None:
+        """
+        处理系统信息
+        
+        Args:
+            payload: 消息载荷
+        """
+        info = payload.get('info', {})
+        
+        # 保存系统信息到文件
+        system_info_file = os.path.join(self.output_dir, "system_info.json")
+        with open(system_info_file, 'w') as f:
+            json.dump(info, f, indent=2)
+        
+        logger.info("收到系统信息")
+        
+        # 记录主模块信息
+        if 'mainModule' in info and info['mainModule']:
+            main_module = info['mainModule']
+            logger.info(f"主模块: {main_module.get('name', 'unknown')}, 基址: {main_module.get('base', 'unknown')}")
+        
+        # 记录模块数量
+        if 'modules' in info:
+            logger.info(f"已加载模块数量: {len(info['modules'])}")
+    
     def _handle_oep_candidate(self, payload: Dict[str, Any]) -> None:
         """
         处理OEP候选信息
@@ -2080,4 +2592,786 @@ class DynamicAnalyzer:
         # 尝试分析PE头以提取有用信息
         try:
             import pefile
-            pe = pefile.PE
+            pe = pefile.PE(data=data)
+            
+            # 提取基本信息
+            pe_info = {
+                'module_name': module_name,
+                'base_address': module_base,
+                'machine_type': pe.FILE_HEADER.Machine,
+                'number_of_sections': pe.FILE_HEADER.NumberOfSections,
+                'timestamp': pe.FILE_HEADER.TimeDateStamp,
+                'characteristics': pe.FILE_HEADER.Characteristics,
+                'entry_point': pe.OPTIONAL_HEADER.AddressOfEntryPoint,
+                'image_base': pe.OPTIONAL_HEADER.ImageBase,
+                'sections': []
+            }
+            
+            # 提取区段信息
+            for section in pe.sections:
+                section_name = section.Name.decode('utf-8', 'ignore').strip('\x00')
+                pe_info['sections'].append({
+                    'name': section_name,
+                    'virtual_address': section.VirtualAddress,
+                    'virtual_size': section.Misc_VirtualSize,
+                    'raw_size': section.SizeOfRawData,
+                    'characteristics': section.Characteristics
+                })
+            
+            # 保存分析结果
+            pe_info_file = os.path.join(self.output_dir, "memory_dumps", f"pe_info_{module_name}_{int(time.time())}.json")
+            with open(pe_info_file, 'w') as f:
+                json.dump(pe_info, f, indent=2)
+                
+            logger.info(f"保存PE分析结果: {pe_info_file}")
+            
+            pe.close()
+        except Exception as e:
+            logger.error(f"分析PE头错误: {str(e)}")
+            
+    def _apply_memory_patch(self, address: int, bytes_data: bytes) -> Dict[str, Any]:
+        """
+        在目标进程中应用内存补丁
+        
+        Args:
+            address: 目标内存地址
+            bytes_data: 要写入的字节数据
+            
+        Returns:
+            包含操作结果的字典
+        """
+        if not self.session:
+            return {"success": False, "error": "没有活动会话"}
+        
+        try:
+            # 创建补丁脚本
+            patch_script = f"""
+            (function() {{
+                try {{
+                    const address = ptr("{hex(address)}");
+                    const bytes = [{','.join([str(b) for b in bytes_data])}];
+                    
+                    // 创建一个原始备份
+                    const originalBytes = Memory.readByteArray(address, {len(bytes_data)});
+                    
+                    // 写入新字节
+                    Memory.writeByteArray(address, bytes);
+                    
+                    send({{
+                        type: 'patch_applied',
+                        address: address.toString(),
+                        size: {len(bytes_data)},
+                        success: true
+                    }}, originalBytes);
+                    
+                    return true;
+                }} catch (e) {{
+                    send({{
+                        type: 'patch_error',
+                        error: e.message,
+                        address: "{hex(address)}",
+                        success: false
+                    }});
+                    return false;
+                }}
+            }})();
+            """
+            
+            # 创建临时脚本并注入
+            result = self._inject_custom_script(patch_script)
+            
+            if result.get('success', False):
+                logger.info(f"内存补丁已应用: 地址 {hex(address)}, 大小 {len(bytes_data)}")
+                
+                # 记录补丁信息
+                patch_info = {
+                    'address': hex(address),
+                    'size': len(bytes_data),
+                    'bytes': bytes_data.hex(),
+                    'timestamp': time.time(),
+                    'success': True
+                }
+                
+                # 保存补丁信息
+                patch_file = os.path.join(self.output_dir, "memory_dumps", f"patch_{hex(address)}_{int(time.time())}.json")
+                with open(patch_file, 'w') as f:
+                    json.dump(patch_info, f, indent=2)
+                
+                return {"success": True, "address": hex(address), "size": len(bytes_data), "info_file": patch_file}
+            else:
+                logger.error(f"应用内存补丁失败: {result.get('error', 'Unknown error')}")
+                return {"success": False, "error": result.get('error', 'Unknown error')}
+                
+        except Exception as e:
+            logger.error(f"应用内存补丁错误: {str(e)}")
+            return {"success": False, "error": str(e)}
+    
+    def _dump_memory_region(self, address: int, size: int, info: str = "") -> Optional[str]:
+        """
+        转储内存区域到文件
+        
+        Args:
+            address: 要转储的内存地址
+            size: 要转储的大小
+            info: 额外描述信息
+            
+        Returns:
+            转储文件路径或None
+        """
+        if not self.session:
+            logger.error("没有活动会话，无法转储内存")
+            return None
+            
+        try:
+            # 创建转储脚本
+            dump_script = f"""
+            (function() {{
+                try {{
+                    const address = ptr("{hex(address)}");
+                    const size = {size};
+                    
+                    console.log("[*] 正在转储内存: " + address + ", 大小: " + size);
+                    
+                    // 读取内存
+                    const data = Memory.readByteArray(address, size);
+                    
+                    send({{
+                        type: 'manual_memory_dump',
+                        address: address.toString(),
+                        size: size,
+                        info: "{info}",
+                        success: true
+                    }}, data);
+                    
+                    return true;
+                }} catch (e) {{
+                    send({{
+                        type: 'dump_error',
+                        error: e.message,
+                        address: "{hex(address)}",
+                        size: {size},
+                        success: false
+                    }});
+                    return false;
+                }}
+            }})();
+            """
+            
+            # 注入临时脚本
+            dump_result = {"success": False}
+            dump_data = None
+            
+            # 定义消息处理函数
+            def on_dump_message(message, data):
+                nonlocal dump_result, dump_data
+                if message['type'] == 'send':
+                    payload = message['payload']
+                    if payload.get('type') == 'manual_memory_dump':
+                        dump_result = payload
+                        dump_data = data
+                elif message['type'] == 'error':
+                    dump_result = {
+                        "success": False,
+                        "error": message.get('description', 'Unknown error')
+                    }
+            
+            # 创建临时脚本并执行
+            temp_script = self.session.create_script(dump_script)
+            temp_script.on('message', on_dump_message)
+            temp_script.load()
+            
+            # 等待脚本执行完毕
+            time.sleep(0.5)
+            
+            if dump_result.get('success', False) and dump_data:
+                # 保存转储数据
+                safe_info = ''.join(c for c in info if c.isalnum() or c in '._- ')[:50]
+                dump_filename = f"manual_dump_{hex(address)}_{size}_{int(time.time())}_{safe_info}.bin"
+                dump_path = os.path.join(self.output_dir, "memory_dumps", dump_filename)
+                
+                with open(dump_path, 'wb') as f:
+                    f.write(dump_data)
+                
+                # 记录转储信息
+                dump_info = {
+                    'path': dump_path,
+                    'address': hex(address),
+                    'size': size,
+                    'timestamp': time.time(),
+                    'info': info,
+                    'md5': hashlib.md5(dump_data).hexdigest()
+                }
+                
+                self.memory_dumps.append(dump_info)
+                logger.info(f"内存转储已保存: {dump_path} (大小: {len(dump_data)})")
+                
+                # 尝试反汇编内存转储
+                if self.disassembler:
+                    try:
+                        disasm_file = self.disassemble_dump(dump_path, address)
+                        
+                        if disasm_file:
+                            logger.info(f"内存转储已反汇编: {disasm_file}")
+                            dump_info['disassembly'] = disasm_file
+                    except Exception as e:
+                        logger.error(f"反汇编内存转储错误: {str(e)}")
+                
+                return dump_path
+            else:
+                logger.error(f"内存转储失败: {dump_result.get('error', 'Unknown error')}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"转储内存错误: {str(e)}")
+            return None
+    
+    def _inject_custom_script(self, script_code: str) -> Dict[str, Any]:
+        """
+        向目标进程注入自定义Frida脚本
+        
+        Args:
+            script_code: JavaScript脚本代码
+            
+        Returns:
+            包含操作结果的字典
+        """
+        if not self.session:
+            return {"success": False, "error": "没有活动会话"}
+            
+        try:
+            # 创建临时脚本结果
+            result = {"success": False}
+            
+            # 定义消息处理函数
+            def on_script_message(message, data):
+                nonlocal result
+                if message['type'] == 'send':
+                    result = message['payload']
+                    result['success'] = True
+                    if data:
+                        result['has_data'] = True
+                elif message['type'] == 'error':
+                    result = {
+                        "success": False,
+                        "error": message.get('description', 'Unknown error')
+                    }
+            
+            # 创建临时脚本并执行
+            temp_script = self.session.create_script(script_code)
+            temp_script.on('message', on_script_message)
+            temp_script.load()
+            
+            # 等待脚本执行完毕
+            time.sleep(0.5)
+            
+            return result
+        except Exception as e:
+            logger.error(f"注入脚本错误: {str(e)}")
+            return {"success": False, "error": str(e)}
+    
+    def _generate_interim_report(self) -> None:
+        """生成临时分析报告"""
+        # 生成报告数据
+        report_data = self._generate_report_data()
+        
+        # 生成JSON报告
+        with open(self.json_report_file, 'w') as f:
+            json.dump(report_data, f, indent=2)
+        
+        # 生成HTML报告
+        self._generate_html_report(report_data)
+    
+    def _generate_report_data(self) -> Dict[str, Any]:
+        """
+        生成报告数据
+        
+        Returns:
+            报告数据字典
+        """
+        return {
+            "target": self.target_path,
+            "analysis_time": time.time() - self.analysis_start_time if self.analysis_start_time else 0,
+            "memory_dumps": self.memory_dumps,
+            "network_data": self.network_data,
+            "file_data": self.file_data,
+            "registry_data": self.registry_data,
+            "oep_candidates": self.oep_candidates,
+            "protection_stats": self.protection_data,
+            "timestamp": time.time()
+        }
+    
+    def _generate_html_report(self, data: Dict[str, Any]) -> None:
+        """
+        生成HTML格式的分析报告
+        
+        Args:
+            data: 报告数据
+        """
+        # 简单HTML模板
+        html = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>动态分析报告</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1, h2, h3 { color: #333; }
+        .section { margin-bottom: 20px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        tr:nth-child(even) { background-color: #f2f2f2; }
+        .highlight { background-color: #ffd700; }
+    </style>
+</head>
+<body>
+    <h1>动态分析报告</h1>
+    <div class="section">
+        <h2>分析信息</h2>
+        <p><strong>目标文件:</strong> {target}</p>
+        <p><strong>分析时间:</strong> {duration} 秒</p>
+        <p><strong>时间戳:</strong> {timestamp}</p>
+    </div>
+    
+    <div class="section">
+        <h2>保护统计</h2>
+        <table>
+            <tr><td>反调试尝试</td><td>{anti_debug}</td></tr>
+            <tr><td>网络连接</td><td>{network_connections}</td></tr>
+            <tr><td>文件访问</td><td>{file_accesses}</td></tr>
+            <tr><td>注册表访问</td><td>{registry_accesses}</td></tr>
+            <tr><td>线程创建</td><td>{thread_creations}</td></tr>
+            <tr><td>内存分配</td><td>{memory_allocations}</td></tr>
+        </table>
+        
+        <h3>检测到的保护</h3>
+        <table>
+            <tr><th>保护类型</th><th>检测次数</th></tr>
+            <tr><td>VMProtect</td><td>{vmprotect}</td></tr>
+            <tr><td>Themida</td><td>{themida}</td></tr>
+            <tr><td>自定义保护</td><td>{custom}</td></tr>
+        </table>
+    </div>
+    
+    <div class="section">
+        <h2>OEP候选 ({oep_count})</h2>
+        <table>
+            <tr><th>地址</th><th>置信度</th><th>原因</th></tr>
+            {oep_rows}
+        </table>
+    </div>
+    
+    <div class="section">
+        <h2>内存转储 ({dumps_count})</h2>
+        <table>
+            <tr><th>文件</th><th>地址</th><th>大小</th><th>信息</th></tr>
+            {dump_rows}
+        </table>
+    </div>
+    
+    <div class="section">
+        <h2>网络活动 ({network_count})</h2>
+        <table>
+            <tr><th>类型</th><th>目标</th><th>大小</th></tr>
+            {network_rows}
+        </table>
+    </div>
+    
+    <div class="section">
+        <h2>文件操作 ({file_count})</h2>
+        <table>
+            <tr><th>操作</th><th>路径</th><th>详情</th></tr>
+            {file_rows}
+        </table>
+    </div>
+    
+    <div class="section">
+        <h2>注册表操作 ({registry_count})</h2>
+        <table>
+            <tr><th>操作</th><th>键/值</th></tr>
+            {registry_rows}
+        </table>
+    </div>
+</body>
+</html>
+"""
+        
+        # 格式化OEP候选行
+        oep_rows = ""
+        for oep in data.get('oep_candidates', []):
+            oep_rows += f"""
+            <tr class="{'highlight' if oep.get('confidence', 0) >= 75 else ''}">
+                <td>{oep.get('address', 'Unknown')}</td>
+                <td>{oep.get('confidence', 0)}%</td>
+                <td>{', '.join(oep.get('reasons', ['Unknown']))}</td>
+            </tr>
+            """
+        
+        # 格式化内存转储行
+        dump_rows = ""
+        for dump in data.get('memory_dumps', []):
+            dump_rows += f"""
+            <tr>
+                <td>{os.path.basename(dump.get('path', 'Unknown'))}</td>
+                <td>{dump.get('address', 'Unknown')}</td>
+                <td>{dump.get('size', 0)} 字节</td>
+                <td>{dump.get('info', '')}</td>
+            </tr>
+            """
+        
+        # 格式化网络活动行
+        network_rows = ""
+        for net in data.get('network_data', []):
+            if net.get('type') == 'connect':
+                network_rows += f"""
+                <tr>
+                    <td>连接</td>
+                    <td>{net.get('address', 'Unknown')}:{net.get('port', 0)}</td>
+                    <td>-</td>
+                </tr>
+                """
+            elif net.get('type') == 'http':
+                network_rows += f"""
+                <tr>
+                    <td>HTTP请求</td>
+                    <td>{net.get('url', 'Unknown')}</td>
+                    <td>-</td>
+                </tr>
+                """
+            elif net.get('type') in ['send', 'recv']:
+                network_rows += f"""
+                <tr>
+                    <td>{'发送' if net.get('type') == 'send' else '接收'}</td>
+                    <td>Socket {net.get('socket', 'Unknown')}</td>
+                    <td>{net.get('length', 0)} 字节</td>
+                </tr>
+                """
+        
+        # 格式化文件操作行
+        file_rows = ""
+        for file_op in data.get('file_data', []):
+            if file_op.get('type') == 'access':
+                file_rows += f"""
+                <tr>
+                    <td>{file_op.get('operation', 'Unknown')}</td>
+                    <td>{file_op.get('path', 'Unknown')}</td>
+                    <td>访问模式: {file_op.get('access', 0)}</td>
+                </tr>
+                """
+            elif file_op.get('type') in ['read', 'write']:
+                file_rows += f"""
+                <tr>
+                    <td>{'读取' if file_op.get('type') == 'read' else '写入'}</td>
+                    <td>句柄 {file_op.get('handle', 'Unknown')}</td>
+                    <td>{file_op.get('length', 0)} 字节</td>
+                </tr>
+                """
+        
+        # 格式化注册表操作行
+        registry_rows = ""
+        for reg in data.get('registry_data', []):
+            if reg.get('type') == 'access':
+                registry_rows += f"""
+                <tr>
+                    <td>{reg.get('operation', 'Unknown')}</td>
+                    <td>{reg.get('key', 'Unknown')}</td>
+                </tr>
+                """
+            elif reg.get('type') == 'data':
+                registry_rows += f"""
+                <tr>
+                    <td>读取值</td>
+                    <td>{reg.get('value', 'Unknown')} ({reg.get('size', 0)} 字节)</td>
+                </tr>
+                """
+        
+        # 格式化HTML
+        formatted_html = html.format(
+            target=data.get('target', 'Unknown'),
+            duration=f"{data.get('analysis_time', 0):.2f}",
+            timestamp=datetime.fromtimestamp(data.get('timestamp', time.time())).strftime('%Y-%m-%d %H:%M:%S'),
+            anti_debug=data.get('protection_stats', {}).get('anti_debug_attempts', 0),
+            network_connections=data.get('protection_stats', {}).get('network_connections', 0),
+            file_accesses=data.get('protection_stats', {}).get('file_accesses', 0),
+            registry_accesses=data.get('protection_stats', {}).get('registry_accesses', 0),
+            thread_creations=data.get('protection_stats', {}).get('thread_creations', 0),
+            memory_allocations=data.get('protection_stats', {}).get('memory_allocations', 0),
+            vmprotect=data.get('protection_stats', {}).get('protection_detections', {}).get('vmprotect', 0),
+            themida=data.get('protection_stats', {}).get('protection_detections', {}).get('themida', 0),
+            custom=data.get('protection_stats', {}).get('protection_detections', {}).get('custom', 0),
+            oep_count=len(data.get('oep_candidates', [])),
+            oep_rows=oep_rows,
+            dumps_count=len(data.get('memory_dumps', [])),
+            dump_rows=dump_rows,
+            network_count=len(data.get('network_data', [])),
+            network_rows=network_rows,
+            file_count=len(data.get('file_data', [])),
+            file_rows=file_rows,
+            registry_count=len(data.get('registry_data', [])),
+            registry_rows=registry_rows
+        )
+        
+        # 写入HTML报告
+        with open(self.report_file, 'w', encoding='utf-8') as f:
+            f.write(formatted_html)
+    
+    def start_analysis(self, timeout: int = 0, run_api_server: bool = True) -> bool:
+        """
+        启动分析过程
+        
+        Args:
+            timeout: 自动停止超时（秒）, 0表示不超时
+            run_api_server: 是否启动API服务器
+            
+        Returns:
+            是否成功启动
+        """
+        if self.running:
+            logger.warning("分析已在运行中")
+            return False
+            
+        if not self.target_path:
+            logger.error("未指定目标文件")
+            return False
+            
+        logger.info(f"开始分析: {self.target_path}")
+        
+        # 创建API服务器（如果需要）
+        if run_api_server:
+            self._create_api_server()
+            self._start_api_server()
+        
+        # 设置分析开始时间
+        self.analysis_start_time = time.time()
+        self.running = True
+        
+        # 设置超时定时器
+        if timeout > 0:
+            self.timeout_timer = threading.Timer(timeout, self.stop_analysis)
+            self.timeout_timer.daemon = True
+            self.timeout_timer.start()
+            logger.info(f"设置超时: {timeout} 秒")
+            
+        try:
+            # 启动进程分析
+            return self.analyze_process()
+        except Exception as e:
+            logger.error(f"启动分析过程错误: {str(e)}")
+            self.running = False
+            
+            if self.timeout_timer:
+                self.timeout_timer.cancel()
+                
+            return False
+    
+    def stop_analysis(self) -> None:
+        """停止分析过程"""
+        if not self.running:
+            logger.warning("分析未在运行")
+            return
+            
+        logger.info("正在停止分析...")
+        
+        # 取消超时定时器
+        if self.timeout_timer:
+            self.timeout_timer.cancel()
+            self.timeout_timer = None
+            
+        try:
+            # 清理Frida会话
+            if self.script:
+                try:
+                    self.script.unload()
+                except:
+                    pass
+                self.script = None
+                
+            if self.session:
+                try:
+                    self.session.detach()
+                except:
+                    pass
+                self.session = None
+            
+            # 如果我们创建了进程，终止它
+            if self.process and not self.attached:
+                try:
+                    self.process.terminate()
+                except:
+                    pass
+                self.process = None
+                
+            # 更新状态
+            self.running = False
+            
+            # 生成最终报告
+            self.generate_final_report()
+            
+            logger.info("分析已停止")
+        except Exception as e:
+            logger.error(f"停止分析错误: {str(e)}")
+    
+    def analyze_process(self) -> bool:
+        """
+        执行目标进程的分析
+        
+        Returns:
+            是否成功启动分析
+        """
+        try:
+            # 先尝试将目标作为进程ID
+            try:
+                pid = int(self.target_path)
+                logger.info(f"尝试连接到进程ID: {pid}")
+                
+                # 尝试连接到现有进程
+                self.session = frida.attach(pid)
+                self.pid = pid
+                self.attached = True
+                
+                logger.info(f"已连接到进程 PID: {pid}")
+            except ValueError:
+                # 不是进程ID，启动进程
+                logger.info(f"尝试启动进程: {self.target_path}")
+                
+                # 创建进程但暂停在入口点
+                self.process = frida.spawn([self.target_path])
+                self.pid = self.process
+                
+                # 附加到进程
+                self.session = frida.attach(self.pid)
+                self.attached = False
+                
+                logger.info(f"已启动并附加到进程 PID: {self.pid}")
+            
+            # 创建并加载脚本
+            self.script = self.session.create_script(FRIDA_SCRIPT)
+            self.script.on('message', self._on_message)
+            self.script.load()
+            
+            logger.info("Frida脚本已加载")
+            
+            # 如果我们创建了进程，现在恢复它
+            if self.process and not self.attached:
+                frida.resume(self.pid)
+                logger.info("进程已恢复执行")
+            
+            return True
+        except Exception as e:
+            logger.error(f"分析进程错误: {str(e)}")
+            logger.error(traceback.format_exc())
+            
+            # 清理
+            if self.script:
+                try:
+                    self.script.unload()
+                except:
+                    pass
+                self.script = None
+                
+            if self.session:
+                try:
+                    self.session.detach()
+                except:
+                    pass
+                self.session = None
+                
+            if self.process and not self.attached:
+                try:
+                    frida.kill(self.pid)
+                except:
+                    pass
+                self.process = None
+                
+            self.running = False
+            return False
+    
+    def generate_final_report(self) -> None:
+        """生成最终分析报告"""
+        logger.info("生成最终分析报告...")
+        
+        # 生成报告数据
+        report_data = self._generate_report_data()
+        
+        # 计算分析持续时间
+        if self.analysis_start_time:
+            report_data['analysis_time'] = time.time() - self.analysis_start_time
+        
+        # 添加最高置信度的OEP
+        if self.oep_candidates:
+            best_oep = max(self.oep_candidates, key=lambda x: x.get('confidence', 0))
+            report_data['best_oep'] = best_oep
+        
+        # 生成JSON报告
+        with open(self.json_report_file, 'w') as f:
+            json.dump(report_data, f, indent=2)
+            
+        logger.info(f"JSON报告已保存: {self.json_report_file}")
+        
+        # 生成HTML报告
+        self._generate_html_report(report_data)
+        logger.info(f"HTML报告已保存: {self.report_file}")
+        
+        # 记录基本统计
+        logger.info(f"分析统计:")
+        logger.info(f"- 内存转储: {len(self.memory_dumps)}")
+        logger.info(f"- 网络活动: {len(self.network_data)}")
+        logger.info(f"- 文件操作: {len(self.file_data)}")
+        logger.info(f"- 注册表操作: {len(self.registry_data)}")
+        logger.info(f"- OEP候选: {len(self.oep_candidates)}")
+        logger.info(f"- 反调试尝试: {self.protection_data['anti_debug_attempts']}")
+
+def main():
+    """主程序入口"""
+    parser = argparse.ArgumentParser(description='增强型动态分析引擎，用于软件保护分析和脱壳')
+    parser.add_argument('target', nargs='?', help='目标文件路径或进程ID')
+    parser.add_argument('-o', '--output-dir', help='输出目录路径')
+    parser.add_argument('-t', '--timeout', type=int, default=0, help='分析超时（秒），0表示不超时')
+    parser.add_argument('-p', '--port', type=int, default=5000, help='API服务器端口')
+    parser.add_argument('-w', '--wait', action='store_true', help='等待分析完成')
+    parser.add_argument('-d', '--disasm', action='store_true', help='自动反汇编内存转储')
+    
+    args = parser.parse_args()
+    
+    if not args.target:
+        parser.print_help()
+        return 1
+    
+    try:
+        # 创建分析器
+        analyzer = DynamicAnalyzer(args.target, args.output_dir, args.port)
+        
+        # 启动分析
+        if analyzer.start_analysis(args.timeout):
+            logger.info(f"分析已启动，进程 ID: {analyzer.pid}")
+            
+            if args.wait:
+                logger.info("等待分析完成...")
+                try:
+                    while analyzer.running:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    logger.info("收到中断，正在停止分析...")
+                    analyzer.stop_analysis()
+            else:
+                logger.info(f"API服务器运行在端口 {args.port}")
+                logger.info("按 Ctrl+C 停止")
+                
+                try:
+                    # 保持主线程运行
+                    while analyzer.running:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    logger.info("收到中断，正在停止分析...")
+                    analyzer.stop_analysis()
+            
+            return 0
+        else:
+            logger.error("启动分析失败")
+            return 1
+    except Exception as e:
+        logger.error(f"错误: {str(e)}")
+        logger.error(traceback.format_exc())
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,45 +1,309 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
-    <title>终极逆向工程平台</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>高级逆向工程平台</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .container { max-width: 1000px; margin: 0 auto; }
-        .form-container { margin-bottom: 20px; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
-        .task-list { margin-top: 20px; }
-        .task-item { padding: 10px; border: 1px solid #eee; margin-bottom: 10px; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            padding-top: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .card {
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            border: none;
+        }
+        .card-header {
+            background-color: #343a40;
+            color: white;
+            border-radius: 10px 10px 0 0 !important;
+            padding: 15px 20px;
+        }
+        .alert {
+            border-radius: 8px;
+        }
+        .task-item {
+            transition: transform 0.2s;
+            cursor: pointer;
+        }
+        .task-item:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 10px rgba(0, 0, 0, 0.15);
+        }
+        .badge-protection {
+            background-color: #dc3545;
+            color: white;
+            padding: 5px 8px;
+            border-radius: 4px;
+            margin-right: 5px;
+            display: inline-block;
+            margin-bottom: 5px;
+        }
+        .task-status {
+            font-weight: bold;
+        }
+        .status-uploaded { color: #6c757d; }
+        .status-analyzing { color: #007bff; }
+        .status-completed { color: #28a745; }
+        .status-failed { color: #dc3545; }
+        .footer {
+            margin-top: 40px;
+            padding: 20px 0;
+            text-align: center;
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+        .upload-area {
+            border: 2px dashed #ddd;
+            border-radius: 10px;
+            padding: 30px;
+            text-align: center;
+            margin: 20px 0;
+            background-color: #f8f9fa;
+            transition: all 0.3s;
+        }
+        .upload-area:hover, .upload-area.dragover {
+            border-color: #007bff;
+            background-color: #f1f8ff;
+        }
+        .upload-icon {
+            font-size: 48px;
+            color: #6c757d;
+            margin-bottom: 10px;
+        }
+        #task-list {
+            min-height: 100px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 30px;
+            color: #6c757d;
+        }
+        .empty-icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>终极逆向工程平台</h1>
-        
-        <div class="form-container">
-            <h2>上传文件进行分析</h2>
-            <form action="/upload" method="post" enctype="multipart/form-data">
-                <div>
-                    <label for="file">选择可执行文件:</label>
-                    <input type="file" id="file" name="file" required>
+        <header class="mb-4">
+            <div class="row align-items-center">
+                <div class="col-md-8">
+                    <h1 class="display-5 fw-bold text-dark">高级逆向工程平台</h1>
+                    <p class="lead text-secondary">分析、脱壳和逆向各种可执行文件</p>
                 </div>
-                <br>
-                <button type="submit">上传</button>
-            </form>
-        </div>
+                <div class="col-md-4 text-end">
+                    <span class="badge bg-dark">版本 {{ app_version }}</span>
+                </div>
+            </div>
+        </header>
         
-        <div class="task-list">
-            <h2>分析任务列表</h2>
-            {% if active_tasks %}
-                {% for task_id, task in active_tasks.items() %}
-                    <div class="task-item">
-                        <h3>{{ task.filename }}</h3>
-                        <p>状态: {{ task.status }}</p>
-                        <a href="/task/{{ task_id }}">查看详情</a>
+        <!-- Flash消息显示 -->
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-info alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                     </div>
                 {% endfor %}
-            {% else %}
-                <p>暂无任务</p>
             {% endif %}
+        {% endwith %}
+
+        <!-- 上传文件区域 -->
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-cloud-upload"></i> 上传文件</h5>
+                <button class="btn btn-sm btn-outline-light" type="button" data-bs-toggle="collapse" data-bs-target="#uploadCollapse">
+                    <i class="bi bi-chevron-down"></i>
+                </button>
+            </div>
+            <div class="collapse show" id="uploadCollapse">
+                <div class="card-body">
+                    <div class="upload-area" id="upload-area">
+                        <i class="bi bi-file-earmark-binary upload-icon"></i>
+                        <h5>拖放文件到此处或点击上传</h5>
+                        <p class="text-muted">支持 EXE, DLL, SYS 等可执行文件</p>
+                        <form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+                            <input type="file" id="file-input" name="file" class="form-control d-none">
+                            <button type="button" id="select-file-btn" class="btn btn-primary">
+                                <i class="bi bi-folder"></i> 选择文件
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
         </div>
+
+        <!-- 任务列表 -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-list-task"></i> 分析任务列表</h5>
+            </div>
+            <div class="card-body">
+                <div id="task-list">
+                    {% if active_tasks %}
+                        <div class="row">
+                            {% for task_id, task in active_tasks.items() %}
+                                <div class="col-md-6 mb-3">
+                                    <div class="card task-item h-100" onclick="location.href='/task/{{ task_id }}'">
+                                        <div class="card-body">
+                                            <div class="d-flex justify-content-between align-items-start">
+                                                <h5 class="card-title text-truncate" title="{{ task.filename }}">
+                                                    <i class="bi bi-file-earmark-binary"></i> {{ task.filename }}
+                                                </h5>
+                                                <span class="task-status 
+                                                    {% if 'completed' in task.status %}status-completed
+                                                    {% elif 'failed' in task.status %}status-failed
+                                                    {% elif 'analyzing' in task.status %}status-analyzing
+                                                    {% else %}status-uploaded{% endif %}">
+                                                    {% if 'completed' in task.status %}
+                                                        <i class="bi bi-check-circle"></i> 已完成
+                                                    {% elif 'failed' in task.status %}
+                                                        <i class="bi bi-x-circle"></i> 失败
+                                                    {% elif 'analyzing' in task.status %}
+                                                        <i class="bi bi-hourglass-split"></i> 分析中
+                                                    {% else %}
+                                                        <i class="bi bi-cloud-check"></i> 已上传
+                                                    {% endif %}
+                                                </span>
+                                            </div>
+                                            <p class="card-text text-muted small mb-2">
+                                                上传时间: {{ task.upload_time }}
+                                            </p>
+                                            <p class="card-text text-muted small mb-2">
+                                                文件大小: {{ task.size|filesizeformat }}
+                                            </p>
+                                            <p class="card-text text-muted small">
+                                                MD5: {{ task.md5 }}
+                                            </p>
+
+                                            {% if task.initial_analysis and task.initial_analysis.file_type %}
+                                                <p class="card-text mt-2">
+                                                    <span class="badge bg-secondary">{{ task.initial_analysis.file_type }}</span>
+                                                    {% if task.initial_analysis.arch %}
+                                                        <span class="badge bg-secondary">{{ task.initial_analysis.arch }}</span>
+                                                    {% endif %}
+                                                </p>
+                                            {% endif %}
+
+                                            {% if task.analysis_results and task.analysis_results.static and task.analysis_results.static.detected_protections %}
+                                                <div class="mt-2">
+                                                    {% for protection in task.analysis_results.static.detected_protections %}
+                                                        <span class="badge-protection">{{ protection }}</span>
+                                                    {% endfor %}
+                                                </div>
+                                            {% endif %}
+                                        </div>
+                                        <div class="card-footer bg-transparent border-top-0">
+                                            <button class="btn btn-sm btn-outline-primary" onclick="event.stopPropagation(); location.href='/task/{{ task_id }}'">
+                                                <i class="bi bi-eye"></i> 查看详情
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="empty-state">
+                            <i class="bi bi-inbox empty-icon"></i>
+                            <h5>暂无任务</h5>
+                            <p class="text-muted">上传文件开始分析</p>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- 页脚 -->
+        <footer class="footer">
+            <div class="row">
+                <div class="col-md-6 text-md-start text-center">
+                    <p>高级逆向工程平台 &copy; 2023</p>
+                </div>
+                <div class="col-md-6 text-md-end text-center">
+                    <a href="/about" class="text-decoration-none text-secondary">关于</a>
+                </div>
+            </div>
+        </footer>
     </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const uploadArea = document.getElementById('upload-area');
+            const fileInput = document.getElementById('file-input');
+            const selectFileBtn = document.getElementById('select-file-btn');
+            const uploadForm = document.getElementById('upload-form');
+
+            // 点击上传区域选择文件
+            uploadArea.addEventListener('click', function(e) {
+                if (e.target !== selectFileBtn && !selectFileBtn.contains(e.target)) {
+                    fileInput.click();
+                }
+            });
+
+            // 点击选择文件按钮
+            selectFileBtn.addEventListener('click', function() {
+                fileInput.click();
+            });
+
+            // 文件选择后自动提交表单
+            fileInput.addEventListener('change', function() {
+                if (fileInput.files.length > 0) {
+                    uploadForm.submit();
+                }
+            });
+
+            // 拖放文件支持
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                uploadArea.addEventListener(eventName, preventDefaults, false);
+            });
+
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                uploadArea.addEventListener(eventName, highlight, false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                uploadArea.addEventListener(eventName, unhighlight, false);
+            });
+
+            function highlight() {
+                uploadArea.classList.add('dragover');
+            }
+
+            function unhighlight() {
+                uploadArea.classList.remove('dragover');
+            }
+
+            uploadArea.addEventListener('drop', handleDrop, false);
+
+            function handleDrop(e) {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+
+                if (files.length > 0) {
+                    fileInput.files = files;
+                    uploadForm.submit();
+                }
+            }
+        });
+    </script>
 </body>
 </html>
