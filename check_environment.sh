@@ -1,128 +1,278 @@
 #!/bin/bash
+# 增强的逆向工程环境完整性检查脚本
+
+# 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${YELLOW}===== 逆向工程环境完整性检查 =====${NC}"
+# 配置
+# 用户可以通过环境变量覆盖默认设置
+ROOT_DIR=${REVERSE_ROOT_DIR:-"$HOME/deobfuscator"}
+REQUIRED_TOOLS=("gdb" "radare2" "python3" "strings" "upx")
+RECOMMENDED_TOOLS=("ltrace" "strace" "ghidra" "ida-free")
+PYTHON_DEPS=("frida" "flask" "pefile" "capstone" "unicorn" "keystone" "r2pipe" "requests" "yara-python")
+
+# 日志函数
+log_info() {
+    echo -e "${YELLOW}[INFO] $1${NC}"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS] $1${NC}"
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARNING] $1${NC}"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR] $1${NC}"
+}
+
+# 进度显示
+show_progress() {
+    local current=$1
+    local total=$2
+    local bar_size=40
+    local filled=$(( current * bar_size / total ))
+    local empty=$(( bar_size - filled ))
+    
+    printf "\r["
+    printf "%${filled}s" '' | tr ' ' '#'
+    printf "%${empty}s" '' | tr ' ' ' '
+    printf "] %d%%" $(( current * 100 / total ))
+}
+
+# 标题显示
+echo -e "\n${BLUE}===========================================${NC}"
+echo -e "${GREEN}     逆向工程环境完整性检查工具 v2.0     ${NC}"
+echo -e "${BLUE}===========================================${NC}\n"
 
 # 检查核心目录结构
-echo -e "\n${YELLOW}检查目录结构:${NC}"
+log_info "检查目录结构..."
+
 DIRS=(
-  "~/deobfuscator"
-  "~/deobfuscator/web"
-  "~/deobfuscator/web/templates"
-  "~/deobfuscator/unpacker"
-  "~/deobfuscator/engines"
-  "~/deobfuscator/uploads"
-  "~/deobfuscator/results"
+  "$ROOT_DIR"
+  "$ROOT_DIR/web"
+  "$ROOT_DIR/web/templates"
+  "$ROOT_DIR/unpacker"
+  "$ROOT_DIR/engines"
+  "$ROOT_DIR/uploads"
+  "$ROOT_DIR/results"
 )
+
+dir_count=0
+total_dirs=${#DIRS[@]}
 
 for dir in "${DIRS[@]}"; do
-  if [ -d $(eval echo $dir) ]; then
-    echo -e "${GREEN}✓ 目录存在: $dir${NC}"
+  ((dir_count++))
+  show_progress $dir_count $total_dirs
+  
+  if [ -d "$dir" ]; then
+    chmod 755 "$dir" &>/dev/null
   else
-    echo -e "${RED}✗ 目录缺失: $dir${NC}"
-    mkdir -p $(eval echo $dir)
-    echo -e "${GREEN}  已创建目录${NC}"
+    mkdir -p "$dir" &>/dev/null
+    chmod 755 "$dir" &>/dev/null
   fi
 done
 
-# 检查关'EOF'
-echo -e "\n${YELLOW}检查关键文件:${NC}"
+echo -e "\n"
+log_success "所有必要目录已创建并设置正确权限"
+
+# 检查关键文件
+log_info "检查关键文件..."
+
 FILES=(
-  "~/deobfuscator/shell_detector.py"
-  "~/deobfuscator/dynamic_analyzer.py"
-  "~/deobfuscator/web/app.py"
-  "~/deobfuscator/web/templates/index.html"
-  "~/deobfuscator/web/templates/task_detail.html"
-  "~/deobfuscator/unpacker/universal_unpacker.py"
-  "~/start_reverse_suite.sh"
+  "$ROOT_DIR/shell_detector.py"
+  "$ROOT_DIR/dynamic_analyzer.py"
+  "$ROOT_DIR/web/app.py"
+  "$ROOT_DIR/web/templates/index.html"
+  "$ROOT_DIR/web/templates/task_detail.html"
+  "$ROOT_DIR/unpacker/universal_unpacker.py"
+  "$HOME/start_reverse_suite.sh"
 )
 
-MISSING=0
+missing_files=()
+file_count=0
+total_files=${#FILES[@]}
+
 for file in "${FILES[@]}"; do
-  if [ -f $(eval echo $file) ]; then
-    echo -e "${GREEN}✓ 文件存在: $file${NC}"
+  ((file_count++))
+  show_progress $file_count $total_files
+  
+  if [ -f "$file" ]; then
+    continue
   else
-    echo -e "${RED}✗ 文件缺失: $file${NC}"
-    MISSING=1
+    missing_files+=("$file")
   fi
 done
+
+echo -e "\n"
+if [ ${#missing_files[@]} -eq 0 ]; then
+  log_success "所有关键文件存在"
+else
+  log_error "以下文件缺失:"
+  for file in "${missing_files[@]}"; do
+    echo -e "  - $file"
+  done
+  echo -e "\n${YELLOW}您需要解决这些缺失文件才能继续${NC}"
+fi
 
 # 检查文件权限
-echo -e "\n${YELLOW}检查执行>:${NC}"
+log_info "检查执行权限..."
+
 EXEC_FILES=(
-  "~/deobfuscator/shell_detector.py"
-  "~/deobfuscator/dynamic_analyzer.py"
-  "~/deobfuscator/unpacker/universal_unpacker.py"
-  "~/start_reverse_suite.sh"
+  "$ROOT_DIR/shell_detector.py"
+  "$ROOT_DIR/dynamic_analyzer.py"
+  "$ROOT_DIR/unpacker/universal_unpacker.py"
+  "$HOME/start_reverse_suite.sh"
 )
+
+exec_count=0
+total_exec=${#EXEC_FILES[@]}
 
 for file in "${EXEC_FILES[@]}"; do
-  if [ -x $(eval echo $file) ]; then
-    echo -e "${GREEN}✓ 执行权限正确: $file${NC}"
-  else
-    echo -e "${RED}✗ 缺少执行权限: $file${NC}"
-    chmod +x $(eval echo $file)
-    echo -e "${GREEN}  已>${NC}"
+  ((exec_count++))
+  show_progress $exec_count $total_exec
+  
+  if [ -f "$file" ]; then
+    if [ -x "$file" ]; then
+      continue
+    else
+      chmod +x "$file" &>/dev/null
+    fi
   fi
 done
+
+echo -e "\n"
+log_success "所有可执行文件已设置正确权限"
 
 # 检查Python依赖
-echo -e "\n${YELLOW}检查Python依赖:${NC}"
-PYTHON_DEPS=(
-  "frida"
-  "flask"
-  "pefile"
-  "capstone"
-  "unicorn"
-  "keystone"
-  "r2pipe"
-  "requests"
-)
+log_info "检查Python依赖..."
+
+missing_deps=()
+installed_deps=()
+pip_output=$(pip3 list 2>/dev/null)
+dep_count=0
+total_deps=${#PYTHON_DEPS[@]}
 
 for dep in "${PYTHON_DEPS[@]}"; do
-  if pip3 list | grep -q $dep; then
-    echo -e "${GREEN}✓ Python包已安装: $dep${NC}"
+  ((dep_count++))
+  show_progress $dep_count $total_deps
+  
+  if echo "$pip_output" | grep -q "$dep"; then
+    installed_deps+=("$dep")
   else
-    echo -e "${RED}✗ Python包缺失: $dep${NC}"
-    echo "  运行以下命令安装: pip3 install $dep"
+    missing_deps+=("$dep")
   fi
 done
+
+echo -e "\n"
+if [ ${#missing_deps[@]} -eq 0 ]; then
+  log_success "所有Python依赖已安装"
+else
+  log_warning "缺少以下Python依赖:"
+  for dep in "${missing_deps[@]}"; do
+    echo -e "  - $dep"
+  done
+  
+  read -p "是否安装缺失的依赖? (y/n): " choice
+  if [[ $choice =~ ^[Yy]$ ]]; then
+    for dep in "${missing_deps[@]}"; do
+      echo -e "安装 $dep..."
+      pip3 install $dep
+    done
+  else
+    echo -e "您需要手动安装缺失的依赖"
+  fi
+fi
 
 # 检查系统工具
-echo -e "\n${YELLOW}检查系统工具:${NC}"
-TOOLS=(
-  "gdb"
-  "radare2"
-  "python3"
-  "strings"
-  "upx"
-)
+log_info "检查系统工具..."
 
-for tool in "${TOOLS[@]}"; do
+missing_tools=()
+recommended_missing=()
+tool_count=0
+total_tools=$((${#REQUIRED_TOOLS[@]} + ${#RECOMMENDED_TOOLS[@]}))
+
+for tool in "${REQUIRED_TOOLS[@]}"; do
+  ((tool_count++))
+  show_progress $tool_count $total_tools
+  
   if command -v $tool &> /dev/null; then
-    echo -e "${GREEN}✓ 工具已安装: $tool${NC}"
+    continue
   else
-    echo -e "${RED}✗ 工具缺失: $tool${NC}"
-    echo "  运行以下命令安装: sudo apt install -y $tool"
+    missing_tools+=("$tool")
   fi
 done
 
-if [ $MISSING -eq 1 ]; then
-  echo -e "\n${RED}检测到缺失文件！请重新生成缺失的组件。${NC}"
+for tool in "${RECOMMENDED_TOOLS[@]}"; do
+  ((tool_count++))
+  show_progress $tool_count $total_tools
+  
+  if command -v $tool &> /dev/null; then
+    continue
+  else
+    recommended_missing+=("$tool")
+  fi
+done
+
+echo -e "\n"
+if [ ${#missing_tools[@]} -eq 0 ]; then
+  log_success "所有必要工具已安装"
 else
-  echo -e "\n${GREEN}文件检查完成！所有关键组件都存在。${NC}"
+  log_error "缺少以下必要工具:"
+  for tool in "${missing_tools[@]}"; do
+    echo -e "  - $tool"
+  done
+  
+  echo -e "\n${YELLOW}您需要安装这些工具才能继续，例如:${NC}"
+  echo -e "  sudo apt install -y ${missing_tools[*]}"
+fi
+
+if [ ${#recommended_missing[@]} -gt 0 ]; then
+  log_warning "建议安装以下工具以提高功能:"
+  for tool in "${recommended_missing[@]}"; do
+    echo -e "  - $tool"
+  done
 fi
 
 # 检查网络连接
-echo -e "\n${YELLOW}测试网络端口可用性:${NC}"
-if command -v netstat &> /dev/null && netstat -tuln | grep -q ":8080"; then
-  echo -e "${RED}✗ 端口8080已被占用${NC}"
-  echo "  您需要关闭占用该端口的服务或修改web界面端口"
+log_info "测试网络端口可用性..."
+
+if command -v netstat &> /dev/null; then
+  if netstat -tuln | grep -q ":8080"; then
+    log_error "端口8080已被占用"
+    echo -e "  您需要关闭占用该端口的服务或修改web界面端口"
+    lsof -i :8080 2>/dev/null || echo "无法确定占用端口的进程"
+  else
+    log_success "端口8080可用"
+  fi
 else
-  echo -e "${GREEN}✓ 端口8080可用${NC}"
+  log_warning "无法检查端口状态 (netstat未安装)"
 fi
 
-echo -e "\n${YELLOW}环境检查完成！${NC}"
+# 环境摘要
+echo -e "\n${BLUE}===========================================${NC}"
+echo -e "${GREEN}             环境检查摘要               ${NC}"
+echo -e "${BLUE}===========================================${NC}"
+
+echo -e "目录状态: ${#DIRS[@]}个已检查"
+echo -e "文件状态: ${#FILES[@]}个已检查, ${#missing_files[@]}个缺失"
+echo -e "Python依赖: ${#PYTHON_DEPS[@]}个已检查, ${#missing_deps[@]}个缺失"
+echo -e "系统工具: ${#REQUIRED_TOOLS[@]}个必要, ${#missing_tools[@]}个缺失"
+echo -e "推荐工具: ${#RECOMMENDED_TOOLS[@]}个推荐, ${#recommended_missing[@]}个未安装"
+
+if [ ${#missing_files[@]} -eq 0 ] && [ ${#missing_tools[@]} -eq 0 ]; then
+  echo -e "\n${GREEN}环境检查完成! 系统已准备就绪${NC}"
+  echo -e "运行以下命令启动系统:"
+  echo -e "  ${YELLOW}$HOME/start_reverse_suite.sh${NC}"
+else
+  echo -e "\n${RED}环境检查完成，但存在问题需要解决${NC}"
+  echo -e "请解决上述问题后再启动系统"
+fi
+
+echo -e "${BLUE}===========================================${NC}\n"

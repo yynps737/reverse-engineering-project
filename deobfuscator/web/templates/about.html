@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>关于 - 高级逆向工程平台</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            padding-top: 20px;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        .card {
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            border: none;
+        }
+        .card-header {
+            background-color: #343a40;
+            color: white;
+            border-radius: 10px 10px 0 0 !important;
+            padding: 15px 20px;
+        }
+        .feature-icon {
+            font-size: 2rem;
+            color: #007bff;
+            margin-bottom: 15px;
+        }
+        .footer {
+            margin-top: 40px;
+            padding: 20px 0;
+            text-align: center;
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+        .tool-card {
+            transition: transform 0.2s;
+        }
+        .tool-card:hover {
+            transform: translateY(-5px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="mb-4">
+            <div class="row align-items-center">
+                <div class="col-md-8">
+                    <h1 class="display-5 fw-bold text-dark">
+                        <a href="/" class="text-decoration-none text-dark">高级逆向工程平台</a>
+                    </h1>
+                    <p class="lead text-secondary">关于平台</p>
+                </div>
+                <div class="col-md-4 text-end">
+                    <span class="badge bg-dark">版本 {{ app_version }}</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- 平台介绍 -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle"></i> 平台介绍</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-8">
+                        <p>高级逆向工程平台是一套集成的工具集，专为软件逆向分析、恶意软件分析和安全研究设计。本平台通过用户友好的Web界面，将多种专业逆向工具无缝集成，简化了复杂软件的分析过程。</p>
+                        <p>主要功能包括静态分析、动态分析、脱壳、内存转储分析等，特别适用于分析受到VMProtect、Themida等商业壳保护的软件。</p>
+                        <p>本平台仅供教育和研究目的使用，请在合法合规的前提下使用本工具。</p>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-flex flex-column align-items-center">
+                            <i class="bi bi-shield-lock feature-icon"></i>
+                            <h5>安全研究工具</h5>
+                            <p class="text-center">专为安全研究人员、逆向工程师和教育工作者设计</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 特性介绍 -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-stars"></i> 主要特性</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-4">
+                    <div class="col-md-4">
+                        <div class="text-center tool-card p-3">
+                            <i class="bi bi-search feature-icon"></i>
+                            <h5>静态分析</h5>
+                            <p>自动识别文件类型、检测壳和保护技术、提取特征信息</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="text-center tool-card p-3">
+                            <i class="bi bi-play-circle feature-icon"></i>
+                            <h5>动态分析</h5>
+                            <p>运行时监控API调用、内存访问、网络通信和反调试行为</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="text-center tool-card p-3">
+                            <i class="bi bi-box feature-icon"></i>
+                            <h5>脱壳引擎</h5>
+                            <p>支持多种商业壳，包括UPX、VMProtect、Themida等</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="text-center tool-card p-3">
+                            <i class="bi bi-memory feature-icon"></i>
+                            <h5>内存分析</h5>
+                            <p>内存转储、区段分析和IAT重建</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="text-center tool-card p-3">
+                            <i class="bi bi-hdd-network feature-icon"></i>
+                            <h5>网络监控</h5>
+                            <p>追踪和分析网络连接、HTTP请求和数据传输</p>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="text-center tool-card p-3">
+                            <i class="bi bi-file-earmark-text feature-icon"></i>
+                            <h5>详细报告</h5>
+                            <p>生成全面的分析报告，包括检测结果和建议</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 使用说明 -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-book"></i> 使用说明</h5>
+            </div>
+            <div class="card-body">
+                <h6>快速开始：</h6>
+                <ol>
+                    <li>在首页上传目标文件（支持EXE、DLL、SYS等可执行文件）</li>
+                    <li>系统会进行初步分析，识别文件类型和架构</li>
+                    <li>根据需要选择执行"静态分析"、"动态分析"或"脱壳"操作</li>
+                    <li>等待分析完成，查看详细报告和结果文件</li>
+                    <li>下载分析报告或处理后的文件进行后续研究</li>
+                </ol>
+                
+                <h6 class="mt-4">命令行使用：</h6>
+                <p>除了Web界面，您还可以使用命令行直接调用核心工具：</p>
+                <div class="bg-light p-3 rounded">
+                    <code>python3 shell_detector.py 目标文件路径</code> - 执行静态壳检测<br>
+                    <code>python3 dynamic_analyzer.py 目标文件路径 -t 超时时间</code> - 执行动态分析<br>
+                    <code>python3 unpacker/universal_unpacker.py 目标文件路径 -o 输出目录</code> - 执行脱壳
+                </div>
+            </div>
+        </div>
+
+        <!-- 技术堆栈 -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-stack"></i> 技术堆栈</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>核心技术：</h6>
+                        <ul>
+                            <li>Python 3 - 核心分析引擎</li>
+                            <li>Frida - 动态检测和注入框架</li>
+                            <li>YARA - 恶意软件检测规则引擎</li>
+                            <li>PE文件分析 - pefile库</li>
+                            <li>Flask - Web界面后端</li>
+                            <li>Bootstrap 5 - 前端UI框架</li>
+                        </ul>
+                    </div>
+                    <div class="col-md-6">
+                        <h6>可选扩展：</h6>
+                        <ul>
+                            <li>Radare2 - 反汇编和分析框架</li>
+                            <li>Capstone - 多平台反汇编引擎</li>
+                            <li>UPX - 可执行文件压缩/解压工具</li>
+                            <li>de4dot - .NET反混淆工具</li>
+                            <li>Scylla - IAT重建工具</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 返回首页 -->
+        <div class="text-center mt-4">
+            <a href="/" class="btn btn-primary">
+                <i class="bi bi-house"></i> 返回首页
+            </a>
+        </div>
+
+        <!-- 页脚 -->
+        <footer class="footer">
+            <p>高级逆向工程平台 &copy; 2023 | 版本 {{ app_version }}</p>
+            <p class="small">本工具仅用于教育和研究目的</p>
+        </footer>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>错误 - 高级逆向工程平台</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            padding-top: 20px;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            max-width: 600px;
+        }
+        .error-card {
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            border: none;
+            overflow: hidden;
+        }
+        .error-header {
+            background-color: #dc3545;
+            color: white;
+            padding: 2rem;
+            text-align: center;
+        }
+        .error-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+        }
+        .error-code {
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+        }
+        .error-body {
+            padding: 2rem;
+            text-align: center;
+        }
+        .error-message {
+            font-size: 1.25rem;
+            margin-bottom: 2rem;
+            color: #6c757d;
+        }
+        .home-button {
+            padding: 0.75rem 2rem;
+            font-size: 1.1rem;
+            border-radius: 50px;
+        }
+        @media (max-width: 576px) {
+            .error-code {
+                font-size: 2rem;
+            }
+            .error-message {
+                font-size: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card error-card">
+            <div class="error-header">
+                {% if error_code == 404 %}
+                    <i class="bi bi-search error-icon"></i>
+                {% elif error_code == 500 %}
+                    <i class="bi bi-exclamation-triangle error-icon"></i>
+                {% else %}
+                    <i class="bi bi-x-circle error-icon"></i>
+                {% endif %}
+                
+                <div class="error-code">{{ error_code }}</div>
+                <h2>
+                    {% if error_code == 404 %}
+                        页面未找到
+                    {% elif error_code == 500 %}
+                        服务器错误
+                    {% else %}
+                        出错了
+                    {% endif %}
+                </h2>
+            </div>
+            <div class="error-body">
+                <p class="error-message">
+                    {% if error_message %}
+                        {{ error_message }}
+                    {% elif error_code == 404 %}
+                        您请求的页面不存在或已被移除
+                    {% elif error_code == 500 %}
+                        服务器处理您的请求时遇到了问题
+                    {% else %}
+                        发生了意外错误，请稍后再试
+                    {% endif %}
+                </p>
+                
+                <a href="/" class="btn btn-primary home-button">
+                    <i class="bi bi-house-door"></i> 返回首页
+                </a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
