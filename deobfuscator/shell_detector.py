@@ -7,6 +7,7 @@ import struct
 import yara
 import subprocess
 import logging
+import math
 from concurrent.futures import ThreadPoolExecutor
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -284,5 +285,4 @@ def main():
     print(f"{'=' * 50}\n")
 
 if __name__ == "__main__":
-    import math
     main()

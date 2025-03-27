@@ -65,14 +65,14 @@ class UniversalUnpacker:
                 output = subprocess.check_output(['python3', detector_path, self.input_file], stderr=subprocess.STDOUT)
                 output_str = output.decode('utf-8', errors='ignore')
                 
-                # 解析保护类
+                # 解析保护类型
                 for line in output_str.splitlines():
                     if line.strip().startswith('-'):
                         protection = line.strip()[2:].strip()
                         if protection:
                             self.analysis_result['detected_protections'].append(protection)
                 
-                logger.info(: {', '.join(self.analysis_result['detected_protections'])}")
+                logger.info(f"检测到的保护: {', '.join(self.analysis_result['detected_protections'])}")
             else:
                 logger.warning(f"壳识别工具不存在: {detector_path}")
         except Exception as e:
@@ -95,7 +95,7 @@ class UniversalUnpacker:
                     'characteristics': section.Characteristics
                 })
             
-            # 收集导
+            # 收集导入表
             if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT'):
                 for entry in pe.DIRECTORY_ENTRY_IMPORT:
                     dll_name = entry.dll.decode('utf-8', errors='ignore')
@@ -174,8 +174,7 @@ class UniversalUnpacker:
             logger.info(f"脱壳成功! 生成了 {len(self.unpacked_files)} 个文件")
             self.dump_success = True
             
-#            # 尝试确定最佳
-
+            # 尝试确定最佳脱壳结果
             best_file = self.select_best_unpacked_file()
             if best_file:
                 final_output = os.path.join(self.output_dir, "final_unpacked.exe")
@@ -311,7 +310,7 @@ class UniversalUnpacker:
         
         output_file = os.path.join(self.output_dir, "dynamic_dump.exe")
         
-        # 'EOF''EOF'
+        # 确定合适的脱壳策略
         strategies = []
         
         # 根据保护类型确定策略
@@ -342,10 +341,9 @@ class UniversalUnpacker:
     
     def vmp_dynamic_unpack(self, output_file):
         """VMProtect专用动态脱壳"""
-        logger.info("尝VMProtect专用动态脱壳...")
+        logger.info("尝试VMProtect专用动态脱壳...")
         
-#        # VMProtect
-'EOF'..
+        # VMProtect专用脱壳实现...
         
         return None
     
@@ -358,8 +356,7 @@ class UniversalUnpacker:
         return None
     
     def generic_dynamic_unpack(self, output_file):
-#        通用动
-"""""
+        """通用动态脱壳"""
         logger.info("尝试通用动态内存转储脱壳...")
         
         try:
@@ -395,7 +392,7 @@ class UniversalUnpacker:
             if dump_to_pe_result:
                 return dump_to_pe_result
             
-            logger.warning("转换内存转储到PE文件")
+            logger.warning("无法转换内存转储到PE文件")
             return None
         except Exception as e:
             logger.error(f"通用动态脱壳错误: {str(e)}")
@@ -403,7 +400,7 @@ class UniversalUnpacker:
     
     def convert_dump_to_pe(self, dump_file, output_file):
         """将内存转储转换为PE文件"""
-        logger.info(f"尝试将内存转PE文件: {dump_file} -> {output_file}")
+        logger.info(f"尝试将内存转储转换为PE文件: {dump_file} -> {output_file}")
         
         try:
             # 使用Scylla或其他工具进行转换
@@ -422,7 +419,7 @@ class UniversalUnpacker:
             # 分析数据是否包含PE头
             pe_header_offset = dump_data.find(b'MZ')
             if pe_header_offset == -1:
-                logger.warning("在内存转--------未找到PE头")
+                logger.warning("在内存转储中未找到PE头")
                 return None
             
             # 提取并修复PE
@@ -507,7 +504,7 @@ class UniversalUnpacker:
     
     def repair_imports(self):
         """修复导入表"""
-        logger.info(尝试导'EOF'...")
+        logger.info("尝试修复导入表...")
         
         # 检查是否有已生成的脱壳文件
         if not self.unpacked_files:
@@ -562,8 +559,7 @@ class UniversalUnpacker:
         if len(self.unpacked_files) == 1:
             return self.unpacked_files[0]
         
-#        # 按照优先级排序: 
-PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPE > 大小更合理 > 静态方法
+        # 按照优先级排序: 有效PE > 导入表完整 > 大小更合理 > 静态方法
         valid_files = []
         
         for file_path in self.unpacked_files:
@@ -590,7 +586,7 @@ PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
         if not valid_files:
             return self.unpacked_files[0]  # 没有有效文件，返回第一个
         
-    if task_id not in active_tasks:))))
+        # 按导入表数量排序
         valid_files.sort(key=lambda x: x['import_count'], reverse=True)
         
         # 取前三名评分
@@ -610,7 +606,7 @@ PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
             # 区段数量评分
             score += min(file_info['section_count'], 10)
             
-            # 大小合理性 (假'EOF'50%-150%是合理的)
+            # 大小合理性 (假设原文件大小的50%-150%是合理的)
             original_size = self.analysis_result['file_size']
             size_ratio = file_info['size'] / original_size
             if 0.5 <= size_ratio <= 1.5:
