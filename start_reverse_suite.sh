@@ -301,7 +301,7 @@ start_web_interface() {
         python3 app.py &
     else
         log_info "以生产模式启动Web界面..."
-        python3 app.py > /dev/null 2>&1 &
+        python3 app.py
     fi
     
     WEB_PID=$!
